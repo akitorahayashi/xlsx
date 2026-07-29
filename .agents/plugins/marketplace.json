@@ -1,11 +1,11 @@
 {
-  "name": "skills-plugin-py",
+  "name": "xlsx",
   "interface": {
-    "displayName": "Skills Plugin Py"
+    "displayName": "xlsx"
   },
   "plugins": [
     {
-      "name": "example-plugin",
+      "name": "xlsx",
       "source": {
         "source": "local",
         "path": "./plugin"

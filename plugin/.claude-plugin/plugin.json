@@ -1,8 +1,8 @@
 {
-  "name": "example-plugin",
+  "name": "xlsx",
   "version": "0.1.0",
-  "description": "Replace this with your plugin's description.",
+  "description": "Inspects, extracts from, and edits .xlsx and .xlsm workbooks through uv-run single-file Python scripts, creating no virtualenv or project files in the user's repository.",
   "author": {
-    "name": "your-name"
+    "name": "akitorahayashi"
   }
 }

@@ -1,24 +1,35 @@
-# Configures development tools only (pytest / ruff / mypy). The skills run on the
-# user's own python3 with no runtime dependency, so none is declared here.
+# Configures development tools only (pytest / ruff / mypy). The skill CLIs run
+# through `uv run --script` as PEP 723 single-file scripts that declare their own
+# runtime dependencies inline; openpyxl and python-calamine appear here solely so
+# tests can build fixture workbooks in the development virtualenv.
 [project]
-name = "skills-plugin-py"
+name = "xlsx"
 version = "0.0.0"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 
 [dependency-groups]
 dev = [
     "pytest>=8",
     "ruff>=0.6",
     "mypy>=1.11",
+    "openpyxl==3.1.5",
+    "python-calamine==0.8.2",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py312"
 line-length = 120
 
 [tool.mypy]
 python_version = "3.12"
 files = ["plugin/skills", "tests"]
+explicit_package_bases = true
+namespace_packages = true
+
+# openpyxl ships no type information; python-calamine ships py.typed.
+[[tool.mypy.overrides]]
+module = ["openpyxl.*"]
+ignore_missing_imports = true

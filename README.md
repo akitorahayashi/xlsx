@@ -1,16 +1,18 @@
-# skills-plugin-py
+# xlsx
 
-A template for one GitHub-installable Agent Skills plugin marketplace whose
-skills are backed by Python scripts. The repository root is the marketplace root
-for Claude Code and Codex, and the `plugin/` directory is the plugin root for
-Claude Code, Antigravity CLI, and Codex. A shared `plugin/skills/` directory
-supplies every client; each skill drives a standard-library Python CLI that
-prints one JSON document.
+A GitHub-installable Agent Skills plugin whose single skill inspects, extracts
+from, and edits `.xlsx` and `.xlsm` workbooks. The repository root is the
+marketplace root for Claude Code and Codex, and the `plugin/` directory is the
+plugin root for Claude Code, Antigravity CLI, and Codex.
+
+The skill drives Python CLIs executed through `uv` as PEP 723 single-file
+scripts, so a plugin user needs no virtualenv, no `pip install`, and no project
+files in the repository they are working in.
 
 ## Structure
 
 ```text
-skills-plugin-py/
+xlsx/
 ├── .claude-plugin/
 │   └── marketplace.json                 # Claude Code marketplace manifest
 ├── .agents/
@@ -18,15 +20,16 @@ skills-plugin-py/
 │       └── marketplace.json             # Codex marketplace manifest
 ├── plugin/
 │   ├── skills/
-│   │   └── example-skill/
+│   │   └── xlsx/
 │   │       ├── SKILL.md
-│   │       └── scripts/summarize.py   # stdlib-only CLI, one JSON document, exit codes 0/1/2
-│   ├── .claude-plugin/plugin.json     # Claude Code manifest
-│   ├── .codex-plugin/plugin.json      # Codex manifest
-│   └── plugin.json                     # Antigravity CLI manifest
-├── tests/                              # process-boundary tests
-├── pyproject.toml                      # development tools only
-├── Makefile                            # make test / fix / lint
+│   │       ├── scripts/probe.py         # read-only CLI: overview / rows / find
+│   │       └── assets/edit.py           # edit template to copy and fill
+│   ├── .claude-plugin/plugin.json       # Claude Code manifest
+│   ├── .codex-plugin/plugin.json        # Codex manifest
+│   └── plugin.json                      # Antigravity CLI manifest
+├── tests/                               # process-boundary tests
+├── pyproject.toml                       # development tools only
+├── Makefile                             # make test / fix / lint
 ├── uv.lock
 ├── .python-version
 ├── README.md
@@ -55,25 +58,49 @@ live at the plugin root. Only `plugin.json` belongs inside `.claude-plugin/` and
   `^[a-zA-Z0-9-_]+$`) and `description` are valid. Skills are discovered from
   `skills/`; do not add other fields.
 
-## The example skill
+## The skill
 
-`plugin/skills/example-skill` demonstrates the conventions every skill in this template
-follows. Its CLI takes a list of numbers as arguments and prints their count,
-sum, min, max, and mean as one JSON document. It uses standard-library imports,
-explicit validation with an actionable error, and exit codes 0 (result), 1 (no
-numbers), and 2 (invalid input, reported as JSON on stderr with an `action`).
+`plugin/skills/xlsx` reads and edits workbooks through two files:
+
+- `scripts/probe.py` — a read-only CLI. `overview` reports the sheet and part
+  inventory and formula presence per sheet; `rows` extracts a bounded window from
+  one sheet; `find` searches cell values, or formula sources under `--formulas`.
+- `assets/edit.py` — a template copied and filled with a single `edit(workbook)`
+  function, then run with explicit input and output paths.
+
+The read path selects a backend by what is asked for. Structure comes from the
+standard-library `zipfile` plus python-calamine, row and value reads use
+python-calamine, and formulas and editing use openpyxl. `SKILL.md` documents the
+cost of each path and the value semantics of each backend.
 
 ## Runtime and development separation
 
-The skill CLIs run on the plugin user's own `python3` with no runtime dependency.
-Every script under `plugin/skills/**/scripts/` imports only the standard library, and
-the supported floor is Python 3.10. The dependencies in `pyproject.toml` are
-development tools (pytest, ruff, mypy) synced by uv into a local `.venv`; they
-are never runtime requirements.
+The skill CLIs run through `uv run --script` as PEP 723 single-file scripts. Each
+script declares its own `requires-python` and its dependencies with exact `==`
+pins in a header comment:
 
-The `plugin/` directory is the distributed plugin. Development assets remain at
-the repository root and do not enter the installable artifact or add runtime
-dependencies.
+```python
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["python-calamine==0.8.2", "openpyxl==3.1.5"]
+# ///
+```
+
+uv resolves `requires-python` against its own managed interpreters, independently
+of the `python3` a user happens to have on `PATH`, so the plugin does not depend
+on the user's interpreter. The floor is Python 3.12.
+
+The pins are exact on purpose. A resolved script environment is never re-resolved
+on later runs, so a lower-bound specifier would silently fix a different version
+per machine and per first-run date, and version churn would accumulate
+permanently in the uv cache. Exact `==` pins fix both the behavior and the cache
+growth.
+
+The dependencies in `pyproject.toml` are development tools synced by uv into a
+local `.venv`; they are never a runtime requirement. openpyxl and python-calamine
+appear there solely so tests can build fixture workbooks. The `plugin/` directory
+is the distributed plugin; development assets at the repository root do not enter
+the installable artifact.
 
 ## Develop
 
@@ -82,40 +109,23 @@ and autofixes; `make lint` runs ruff and mypy; `make test` runs pytest. Run
 `make fix` before `make lint`. See [CONTRIBUTING.md](CONTRIBUTING.md) for the
 full workflow and CLI contract.
 
-## Customize
+## Validate
 
-1. Rename the repository to your plugin name.
-2. Rename `plugin/skills/example-skill/` to your skill's name and rewrite its
-   `SKILL.md`. Replace its CLI under that skill's `scripts/` directory with your
-   own, and add optional `references/` and `assets/` directories if the skill
-   needs them.
-3. Replace `example-plugin` with your plugin name (kebab-case) in the plugin
-   manifests and marketplace manifests. Replace `skills-plugin-py` with your
-   repository or marketplace name, and replace `your-name` in the Claude Code
-   and Codex manifests.
-4. Add more skills as sibling directories under `plugin/skills/`, and add tests under
-   `tests/`. Group related skills in one plugin rather than splitting one plugin
-   per skill.
-5. Validate before distributing:
-
-   ```bash
-   claude plugin validate .
-   claude plugin validate ./plugin
-   agy plugin validate ./plugin
-   ```
+```bash
+claude plugin validate .
+claude plugin validate ./plugin
+agy plugin validate ./plugin
+```
 
 ## Install
 
-The repository root is the marketplace root for GitHub distribution. Replace
-`owner/skills-plugin-py` with the published repository.
+The repository root is the marketplace root for GitHub distribution.
 
 ### Claude Code
 
-Claude Code installs the plugin from this repository's marketplace:
-
 ```bash
-claude plugin marketplace add owner/skills-plugin-py
-claude plugin install example-plugin@skills-plugin-py
+claude plugin marketplace add akitorahayashi/xlsx
+claude plugin install xlsx@xlsx
 ```
 
 For local development, Claude Code can load the plugin root for the current
@@ -123,11 +133,9 @@ session with `claude --plugin-dir ./plugin`.
 
 ### Codex
 
-Codex installs the plugin from this repository's marketplace:
-
 ```bash
-codex plugin marketplace add owner/skills-plugin-py
-codex plugin add example-plugin@skills-plugin-py
+codex plugin marketplace add akitorahayashi/xlsx
+codex plugin add xlsx@xlsx
 ```
 
 ### Antigravity CLI
