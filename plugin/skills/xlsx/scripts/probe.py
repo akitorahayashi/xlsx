@@ -154,7 +154,12 @@ def match_text(value: Any) -> Optional[str]:
 
 
 def emit(document: dict[str, Any]) -> None:
-    print(json.dumps(document, indent=2, ensure_ascii=False))
+    """Print the result as one compact single-line JSON document.
+
+    The consumer is an agent, so indentation is pure token cost on a large rows
+    extraction. edit.py's success line is compact for the same reason.
+    """
+    print(json.dumps(document, separators=(",", ":"), ensure_ascii=False))
 
 
 # --------------------------------------------------------------------------- #
