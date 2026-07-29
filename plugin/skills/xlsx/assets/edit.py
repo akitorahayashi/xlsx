@@ -33,8 +33,8 @@ from typing import Any
 
 from openpyxl import load_workbook
 
-SUPPORTED_SUFFIXES = (".xlsx", ".xlsm", ".xltx", ".xltm")
-VBA_SUFFIXES = (".xlsm", ".xltm")
+SUPPORTED_SUFFIXES = (".xlsx", ".xlsm")
+VBA_SUFFIX = ".xlsm"
 
 
 class EditError(Exception):
@@ -108,7 +108,7 @@ def run(input_arg: str, output_arg: str) -> int:
     if source.suffix.lower() not in SUPPORTED_SUFFIXES:
         raise EditError(
             f"Unsupported extension: {source.suffix or '(none)'}",
-            "This template edits .xlsx and .xlsm (and .xltx/.xltm) workbooks only.",
+            "This template edits .xlsx and .xlsm only. Convert other formats to .xlsx first.",
         )
 
     # data_only=True would replace every formula with its last cached value on
@@ -116,7 +116,7 @@ def run(input_arg: str, output_arg: str) -> int:
     workbook = load_workbook(
         str(source),
         data_only=False,
-        keep_vba=source.suffix.lower() in VBA_SUFFIXES,
+        keep_vba=source.suffix.lower() == VBA_SUFFIX,
     )
     try:
         try:

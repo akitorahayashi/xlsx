@@ -51,11 +51,14 @@ def test_missing_input_exits_two(run_script, edit_cli, tmp_path):
     assert not output.exists()
 
 
-def test_unsupported_extension_exits_two(run_script, edit_cli, tmp_path):
+@pytest.mark.parametrize("suffix", [".txt", ".xls"])
+def test_unsupported_extension_exits_two(run_script, edit_cli, workbook, tmp_path, suffix):
+    # .xls carries a real workbook body, so rejection is by suffix and not by
+    # content: the suffix set is the whole contract, and probe.py shares it
     filled = _fill(edit_cli, tmp_path, NO_CHANGES)
-    other = tmp_path / "data.txt"
-    other.write_text("not a workbook")
-    result = run_script(filled, other, tmp_path / "out.txt")
+    other = tmp_path / f"data{suffix}"
+    shutil.copy(workbook, other)
+    result = run_script(filled, other, other)
     _assert_exit_two(result)
 
 
