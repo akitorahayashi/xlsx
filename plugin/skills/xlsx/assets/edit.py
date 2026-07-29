@@ -94,9 +94,10 @@ def save_atomically(workbook: Any, output: Path) -> None:
         workbook.save(staged)
         os.chmod(staged, destination_mode(output))
         os.replace(staged, output)
-    except BaseException:
+    finally:
+        # the staging file never outlives this call; after a successful replace it
+        # is already gone, and on any failure this is what removes it
         staged_path.unlink(missing_ok=True)
-        raise
 
 
 def run(input_arg: str, output_arg: str) -> int:
