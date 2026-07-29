@@ -13,13 +13,15 @@ Usage:
 
     uv run --script edit.py <input.xlsx> <output.xlsx>
 
-Both paths are required. An in-place edit passes the same path twice; the atomic
-save through a sibling temporary file makes that safe.
+Both paths are required and must carry the same extension. An in-place edit passes
+the same path twice; the atomic save through a sibling temporary file makes that
+safe. This template edits a workbook, it never converts between formats.
 
 Exit codes:
 - 0: the edit ran and the output was written.
-- 2: a usage or runtime error (edit() not filled in, input missing, bad
-     extension). stderr carries one JSON document with "error" and "action".
+- 2: a usage or runtime error (edit() not filled in, input missing, unsupported or
+     mismatched extension). stderr carries one JSON document with "error" and
+     "action".
 """
 
 from __future__ import annotations
@@ -110,6 +112,16 @@ def run(input_arg: str, output_arg: str) -> int:
         raise EditError(
             f"Unsupported extension: {source.suffix or '(none)'}",
             "This template edits .xlsx and .xlsm only. Convert other formats to .xlsx first.",
+        )
+    # keep_vba is decided from the input, so a mismatched output extension writes a
+    # package that contradicts its own name: an .xlsm saved as .xlsx keeps
+    # xl/vbaProject.bin and its content type, and an .xlsx saved as .xlsm has no VBA
+    # project at all. Converting formats is a different operation from editing one.
+    if output.suffix.lower() != source.suffix.lower():
+        raise EditError(
+            f"Output extension {output.suffix or '(none)'} does not match the input's {source.suffix}.",
+            f"Write the output with the same extension as the input ({source.suffix}); "
+            "this template edits a workbook and never converts between formats.",
         )
 
     # data_only=True would replace every formula with its last cached value on

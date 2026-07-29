@@ -107,6 +107,10 @@ its formula cells returns null; read such cells with `--formulas`. An edit throu
    uv run --quiet --script <dir>/edit.py input.xlsx output.xlsx
    ```
 
+   Both paths carry the same extension. The template edits a workbook and never
+   converts between formats, so a mismatched output extension is a usage error
+   rather than a package whose contents contradict its name.
+
 4. Verify the result with `probe.py`, not with the script's own summary: read back
    the changed cells and confirm formulas and merged ranges survived.
 

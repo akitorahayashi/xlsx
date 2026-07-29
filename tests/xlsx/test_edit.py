@@ -62,6 +62,25 @@ def test_unsupported_extension_exits_two(run_script, edit_cli, workbook, tmp_pat
     _assert_exit_two(result)
 
 
+@pytest.mark.parametrize("out_name", ["out.xlsm", "out.xls", "out"])
+def test_output_extension_must_match_the_input(run_script, edit_cli, workbook, tmp_path, out_name):
+    filled = _fill(edit_cli, tmp_path, NO_CHANGES)
+    output = tmp_path / out_name
+    result = run_script(filled, workbook, output)
+    _assert_exit_two(result)
+    assert not output.exists()
+
+
+def test_macro_input_cannot_be_written_to_a_plain_extension(run_script, edit_cli, macro_workbook, tmp_path):
+    """Otherwise the VBA part travels into a file named .xlsx (keep_vba is decided
+    from the input), so the package would contradict its own extension."""
+    filled = _fill(edit_cli, tmp_path, NO_CHANGES)
+    output = tmp_path / "converted.xlsx"
+    result = run_script(filled, macro_workbook, output)
+    _assert_exit_two(result)
+    assert not output.exists()
+
+
 def test_edit_runtime_error_is_json_and_leaves_no_output(run_script, edit_cli, workbook, tmp_path):
     boom = _fill(edit_cli, tmp_path, '    raise ValueError("boom")', name="edit_boom.py")
     output = tmp_path / "out.xlsx"
