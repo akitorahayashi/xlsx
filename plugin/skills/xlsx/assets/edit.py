@@ -61,18 +61,38 @@ def edit(workbook: Any) -> list[str]:
     raise NotImplementedError
 
 
+def destination_mode(output: Path) -> int:
+    """The permission mode the saved workbook must carry.
+
+    An existing destination keeps its own mode, so an in-place edit does not
+    change who can read the workbook. A new destination gets the mode a plain
+    create would have produced under the current umask.
+    """
+    if output.exists():
+        return output.stat().st_mode & 0o7777
+    mask = os.umask(0)
+    os.umask(mask)
+    return 0o666 & ~mask
+
+
 def save_atomically(workbook: Any, output: Path) -> None:
     """Save to a sibling temporary file, then os.replace onto the destination.
 
     Staging in the destination directory keeps the replace atomic on the same
     filesystem, so an in-place edit (input path == output path) never leaves a
     half-written workbook if the save raises.
+
+    mkstemp creates the staging file 0600 and os.replace carries that mode onto
+    the destination, so the mode is set explicitly before the replace. Ownership,
+    ACLs, and extended attributes still come from the new inode, not the replaced
+    one; mode is the part that is preserved.
     """
     handle, staged = tempfile.mkstemp(dir=str(output.parent), suffix=output.suffix)
     os.close(handle)
     staged_path = Path(staged)
     try:
         workbook.save(staged)
+        os.chmod(staged, destination_mode(output))
         os.replace(staged, output)
     except BaseException:
         staged_path.unlink(missing_ok=True)

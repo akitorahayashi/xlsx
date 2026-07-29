@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import zipfile
 from pathlib import Path
@@ -92,6 +93,32 @@ def test_filled_edit_round_trip(run_script, edit_cli, probe_cli, workbook, tmp_p
     overview = run_script(probe_cli, "overview", target)
     ledger = next(s for s in json.loads(overview.stdout)["sheets"] if s["name"] == "Ledger")
     assert ledger["mergedRanges"] == ["A7:B7"]  # merged range survived
+
+
+def test_in_place_edit_preserves_permission_mode(run_script, edit_cli, workbook, tmp_path):
+    filled = _fill(edit_cli, tmp_path, NO_CHANGES)
+    target = tmp_path / "target.xlsx"
+    shutil.copy(workbook, target)
+    target.chmod(0o664)
+
+    result = run_script(filled, target, target)
+    assert result.returncode == 0, result.stderr
+    assert target.stat().st_mode & 0o777 == 0o664
+
+
+def test_fresh_output_mode_follows_the_umask(run_script, edit_cli, workbook, tmp_path):
+    # the mode is asserted against an explicit umask: 0o666 & ~0o022 == 0o644
+    filled = _fill(edit_cli, tmp_path, NO_CHANGES)
+    output = tmp_path / "fresh.xlsx"
+
+    previous = os.umask(0o022)
+    try:
+        result = run_script(filled, workbook, output)
+    finally:
+        os.umask(previous)
+
+    assert result.returncode == 0, result.stderr
+    assert output.stat().st_mode & 0o777 == 0o644
 
 
 def test_macro_edit_preserves_vba_project(run_script, edit_cli, macro_workbook, tmp_path):
