@@ -1,0 +1,8 @@
+{
+  "name": "example-plugin",
+  "version": "0.1.0",
+  "description": "Replace this with your plugin's description.",
+  "author": {
+    "name": "your-name"
+  }
+}

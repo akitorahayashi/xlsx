@@ -1,0 +1,14 @@
+{
+  "name": "skills-plugin-py",
+  "description": "A GitHub-installable marketplace for the example Python-backed Agent Skills plugin.",
+  "owner": {
+    "name": "your-name"
+  },
+  "plugins": [
+    {
+      "name": "example-plugin",
+      "source": "./plugin",
+      "description": "Replace this with your plugin's description."
+    }
+  ]
+}

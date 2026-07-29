@@ -1,0 +1,24 @@
+# Configures development tools only (pytest / ruff / mypy). The skills run on the
+# user's own python3 with no runtime dependency, so none is declared here.
+[project]
+name = "skills-plugin-py"
+version = "0.0.0"
+requires-python = ">=3.10"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.mypy]
+python_version = "3.12"
+files = ["plugin/skills", "tests"]
