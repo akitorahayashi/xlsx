@@ -43,6 +43,9 @@ PKG_REL_NS = "{http://schemas.openxmlformats.org/package/2006/relationships}"
 
 SUPPORTED_SUFFIXES = (".xlsx", ".xlsm")
 
+# A row source: sheet name -> (one-based row, values anchored at column A) pairs.
+RowsForSheet = Callable[[str], Iterator[tuple[int, list[Any]]]]
+
 
 class CLIError(Exception):
     """An input or runtime error carrying an action for the caller to fix."""
@@ -570,43 +573,53 @@ def build_matcher(args: argparse.Namespace) -> Callable[[str], bool]:
     return lambda text: needle in text.lower()
 
 
-def _find_calamine(
-    workbook: calamine.CalamineWorkbook,
+def _calamine_find_rows(workbook: calamine.CalamineWorkbook) -> RowsForSheet:
+    def rows_for_sheet(name: str) -> Iterator[tuple[int, list[Any]]]:
+        sheet = workbook.get_sheet_by_name(name)
+        if sheet.start is None:  # guard: calamine panics on iter of an empty sheet
+            return iter(())
+        # the full used column span, never sliced, so coordinates stay absolute
+        return _calamine_row_iter(sheet, 0, sheet.total_width)
+
+    return rows_for_sheet
+
+
+def _openpyxl_find_rows(workbook: Any) -> RowsForSheet:
+    def rows_for_sheet(name: str) -> Iterator[tuple[int, list[Any]]]:
+        worksheet = workbook[name]
+        # min_row=1 and min_col=1 are load-bearing: a bare iter_rows() on a
+        # read-only worksheet is anchored at the used range, not at A1.
+        return _openpyxl_row_iter(worksheet, 1, worksheet.max_column)
+
+    return rows_for_sheet
+
+
+def find_matches(
+    rows_for_sheet: RowsForSheet,
     sheet_names: list[str],
     test: Callable[[str], bool],
     max_matches: Optional[int],
 ) -> tuple[list[dict[str, Any]], bool]:
+    """Walk each sheet's rows and collect matches until --max-matches is reached.
+
+    The row source must yield (one-based row, values anchored at column A), which
+    is what makes the reported cell coordinates absolute A1 on both backends.
+
+    The cap stops the walk the moment it is reached, without looking for one more
+    match to prove truncation. That is what makes --max-matches a cost bound on a
+    workbook whose full scan is expensive, and it is why this loop is not shared
+    with _consume_rows, which can check its bound before emitting because a row
+    count is cheap to know.
+    """
     matches: list[dict[str, Any]] = []
     for name in sheet_names:
-        sheet = workbook.get_sheet_by_name(name)
-        if sheet.start is None:  # guard: calamine panics on iter of an empty sheet
-            continue
-        grid = sheet.to_python(skip_empty_area=False)
-        for r, row in enumerate(grid):
-            for c, value in enumerate(row):
+        for abs_row, values in rows_for_sheet(name):
+            for index, value in enumerate(values):
                 text = match_text(value)
                 if text is None or not test(text):
                     continue
-                matches.append({"sheet": name, "cell": f"{column_letter(c)}{r + 1}", "value": to_json_value(value)})
-                if max_matches is not None and len(matches) >= max_matches:
-                    return matches, True
-    return matches, False
-
-
-def _find_openpyxl(
-    workbook: Any, sheet_names: list[str], test: Callable[[str], bool], max_matches: Optional[int]
-) -> tuple[list[dict[str, Any]], bool]:
-    matches: list[dict[str, Any]] = []
-    for name in sheet_names:
-        worksheet = workbook[name]
-        for row in worksheet.iter_rows():
-            for cell in row:
-                if cell.value is None:
-                    continue
-                text = match_text(cell.value)
-                if text is None or not test(text):
-                    continue
-                matches.append({"sheet": name, "cell": cell.coordinate, "value": to_json_value(cell.value)})
+                cell = f"{column_letter(index)}{abs_row}"
+                matches.append({"sheet": name, "cell": cell, "value": to_json_value(value)})
                 if max_matches is not None and len(matches) >= max_matches:
                     return matches, True
     return matches, False
@@ -636,13 +649,13 @@ def cmd_find(args: argparse.Namespace) -> int:
         workbook = load_workbook(str(path), read_only=True, data_only=False)
         try:
             sheet_names = select_sheets(args.sheet, list(workbook.sheetnames))
-            matches, truncated = _find_openpyxl(workbook, sheet_names, test, args.max_matches)
+            matches, truncated = find_matches(_openpyxl_find_rows(workbook), sheet_names, test, args.max_matches)
         finally:
             workbook.close()
     else:
         calamine_workbook = calamine.CalamineWorkbook.from_path(str(path))
         sheet_names = select_sheets(args.sheet, calamine_workbook.sheet_names)
-        matches, truncated = _find_calamine(calamine_workbook, sheet_names, test, args.max_matches)
+        matches, truncated = find_matches(_calamine_find_rows(calamine_workbook), sheet_names, test, args.max_matches)
 
     emit(
         {
