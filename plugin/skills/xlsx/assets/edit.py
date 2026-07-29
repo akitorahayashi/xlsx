@@ -122,10 +122,12 @@ def run(input_arg: str, output_arg: str) -> int:
         try:
             changes = edit(workbook)
         except NotImplementedError:
+            # from None: the NotImplementedError is this template's own sentinel
+            # for "not filled in", not a cause worth showing the caller
             raise EditError(
                 "The edit() function is not filled in.",
                 "Open this copy of edit.py and implement edit(workbook) before running it.",
-            )
+            ) from None
         if not isinstance(changes, list) or not all(isinstance(line, str) for line in changes):
             raise EditError(
                 "edit() must return a list of summary strings.",
