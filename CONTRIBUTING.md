@@ -55,7 +55,7 @@ errors carrying a user-actionable `action`, not a degraded result.
 ## Tests
 
 Tests live outside the skills, at the repository root under `tests/`, as pytest
-functions split by concern. They assert each script's process boundary (exit
+functions split by concern. Skill tests assert a script's process boundary (exit
 code, the stdout and stderr JSON, any written files), not internal functions.
 
 - `tests/conftest.py` provides a runner that invokes a skill script through
@@ -63,6 +63,10 @@ code, the stdout and stderr JSON, any written files), not internal functions.
 - `tests/xlsx/` builds its own fixture workbooks with openpyxl into `tmp_path`,
   so no test depends on any external workbook, and covers `overview`, `rows`,
   `find`, the error surface, and the `edit.py` round trip.
+- `tests/test_manifests.py` asserts that the plugin identity duplicated across
+  the manifests stays consistent. It is the one test that is not a process
+  boundary, because each client reads its own manifest and nothing else catches a
+  partial edit.
 
 Enumerate matrix cases with `@pytest.mark.parametrize`, and keep any temporary
 state in `tmp_path`. Tests assert behavior observable at the CLI boundary and do
