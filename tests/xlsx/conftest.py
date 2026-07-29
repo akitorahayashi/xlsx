@@ -12,6 +12,8 @@ from pathlib import Path
 import openpyxl
 import pytest
 from openpyxl.chart import BarChart, Reference
+from openpyxl.comments import Comment
+from openpyxl.worksheet.datavalidation import DataValidation
 
 
 @pytest.fixture
@@ -63,5 +65,33 @@ def header_workbook(tmp_path: Path) -> Path:
     duplicate["A2"], duplicate["B2"] = 1, 2
 
     path = tmp_path / "headers.xlsx"
+    wb.save(path)
+    return path
+
+
+@pytest.fixture
+def feature_workbook(tmp_path: Path) -> Path:
+    """Sheets that exercise part counting, formula-presence, and offset dimensions.
+
+    Commented carries a real cell comment. Validated has only a list data
+    validation (a `<formula1>` element that must not be read as a cell formula).
+    Offset's single populated cell is C5, so its used range does not start at A1.
+    """
+    wb = openpyxl.Workbook()
+    commented = wb.active
+    commented.title = "Commented"
+    commented["A1"] = "hi"
+    commented["A1"].comment = Comment("a note", "author")
+
+    validated = wb.create_sheet("Validated")
+    validation = DataValidation(type="list", formula1='"a,b,c"')
+    validated.add_data_validation(validation)
+    validation.add("B2")
+    validated["A1"] = "plain"
+
+    offset = wb.create_sheet("Offset")
+    offset["C5"] = "only"
+
+    path = tmp_path / "features.xlsx"
     wb.save(path)
     return path

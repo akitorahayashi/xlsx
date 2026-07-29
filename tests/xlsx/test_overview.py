@@ -40,3 +40,26 @@ def test_overview_traverses_empty_sheet_without_panic(run_script, probe_cli, wor
     result = run_script(probe_cli, "overview", workbook)
     assert result.returncode == 0
     assert "PanicException" not in result.stderr
+
+
+def test_overview_counts_legacy_comment_directory_layout(run_script, probe_cli, feature_workbook):
+    # openpyxl stores legacy comments under xl/comments/comment1.xml
+    result = run_script(probe_cli, "overview", feature_workbook)
+    doc = json.loads(result.stdout)
+    assert doc["parts"]["comments"] == 1
+
+
+def test_overview_data_validation_is_not_a_formula(run_script, probe_cli, feature_workbook):
+    result = run_script(probe_cli, "overview", feature_workbook)
+    sheets = {sheet["name"]: sheet for sheet in json.loads(result.stdout)["sheets"]}
+    # a list validation carries <formula1> but no cell formula
+    assert sheets["Validated"]["hasFormulas"] is False
+    assert sheets["Commented"]["hasFormulas"] is False
+
+
+def test_overview_used_range_reflects_starting_cell(run_script, probe_cli, feature_workbook):
+    result = run_script(probe_cli, "overview", feature_workbook)
+    offset = next(s for s in json.loads(result.stdout)["sheets"] if s["name"] == "Offset")
+    assert offset["usedRange"] == "C5:C5"
+    assert offset["rows"] == 1
+    assert offset["columns"] == 1

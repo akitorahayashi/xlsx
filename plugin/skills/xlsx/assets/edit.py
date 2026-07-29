@@ -73,10 +73,10 @@ def save_atomically(workbook: Any, output: Path) -> None:
     staged_path = Path(staged)
     try:
         workbook.save(staged)
+        os.replace(staged, output)
     except BaseException:
         staged_path.unlink(missing_ok=True)
         raise
-    os.replace(staged, output)
 
 
 def run(input_arg: str, output_arg: str) -> int:
@@ -137,6 +137,18 @@ def main(argv: list[str] | None = None) -> int:
         return run(args[0], args[1])
     except EditError as error:
         print(json.dumps({"error": str(error), "action": error.action}, ensure_ascii=False), file=sys.stderr)
+        return 2
+    except Exception as error:  # noqa: BLE001 - surface runtime failures as exit 2 JSON, not a traceback
+        print(
+            json.dumps(
+                {
+                    "error": f"{type(error).__name__}: {error}",
+                    "action": "The edit() function or the save failed; fix the edit logic or the output path and retry.",
+                },
+                ensure_ascii=False,
+            ),
+            file=sys.stderr,
+        )
         return 2
 
 

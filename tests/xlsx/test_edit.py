@@ -11,6 +11,19 @@ def test_unfilled_template_exits_two(run_script, edit_cli, workbook, tmp_path):
     assert payload["action"]
 
 
+def test_edit_runtime_error_is_json_and_leaves_no_output(run_script, edit_cli, workbook, tmp_path):
+    boom = tmp_path / "edit_boom.py"
+    boom.write_text(edit_cli.read_text().replace("    raise NotImplementedError", '    raise ValueError("boom")'))
+    output = tmp_path / "out.xlsx"
+
+    result = run_script(boom, workbook, output)
+    assert result.returncode == 2
+    assert result.stdout == ""
+    payload = json.loads(result.stderr)
+    assert payload["action"]
+    assert not output.exists()  # the staged temp file is cleaned up, nothing half-written
+
+
 def test_filled_edit_round_trip(run_script, edit_cli, probe_cli, workbook, tmp_path):
     filled = tmp_path / "edit_filled.py"
     source = edit_cli.read_text().replace(

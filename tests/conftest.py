@@ -25,7 +25,9 @@ def run_script():
     """
 
     def _run(script: Path, *args: object) -> subprocess.CompletedProcess[str]:
-        argv = ["uv", "run", "--script", str(script), *[str(arg) for arg in args]]
+        # --quiet keeps uv's first-run "Installed ..." progress off the script's
+        # stderr, so the stderr JSON contract holds even when the env is cold.
+        argv = ["uv", "run", "--quiet", "--script", str(script), *[str(arg) for arg in args]]
         return subprocess.run(argv, capture_output=True, text=True, timeout=180)
 
     return _run

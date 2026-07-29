@@ -53,6 +53,22 @@ def test_rows_max_rows_sets_truncated(run_script, probe_cli, workbook):
     assert doc["truncated"] is True
 
 
+def test_rows_max_rows_without_range_caps_output(run_script, probe_cli, workbook):
+    # no --range: the lazy reader must still stop after the cap
+    result = run_script(probe_cli, "rows", workbook, "Ledger", "--max-rows", "2")
+    assert result.returncode == 0
+    doc = json.loads(result.stdout)
+    assert doc["rowCount"] == 2
+    assert doc["truncated"] is True
+
+
+def test_rows_reads_sheet_not_starting_at_a1(run_script, probe_cli, feature_workbook):
+    result = run_script(probe_cli, "rows", feature_workbook, "Offset", "--range", "C5:C5")
+    assert result.returncode == 0
+    doc = json.loads(result.stdout)
+    assert doc["rows"] == [["only"]]
+
+
 def test_rows_csv_shape_and_notes(run_script, probe_cli, workbook):
     result = run_script(probe_cli, "rows", workbook, "Ledger", "--header-row", "1", "--format", "csv")
     assert result.returncode == 0

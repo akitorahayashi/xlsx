@@ -19,11 +19,12 @@ so uv resolves them against its own managed interpreter. No virtualenv and no
 project file is created in the user's repository.
 
 Paths are resolved relative to this `SKILL.md`, not the shell working directory.
-Both files run through `uv run --script <path>`, never by executing the file
-directly:
+Both files run through `uv run --quiet --script <path>`, never by executing the
+file directly. `--quiet` keeps uv's first-run dependency-install progress off the
+script's stderr, so the stderr JSON contract holds even on the first invocation:
 
 ```bash
-uv run --script <skill-dir>/scripts/probe.py overview workbook.xlsx
+uv run --quiet --script <skill-dir>/scripts/probe.py overview workbook.xlsx
 ```
 
 Every subcommand prints one JSON document on stdout. Exit codes: 0 a result was
@@ -43,9 +44,13 @@ largest sheet 191MB of XML, 1.45M formula cells):
 | `rows` / `find` (values) | python-calamine | 1–2s for a full scan |
 | `rows --formulas` / `find --formulas` | openpyxl | tens of seconds, GBs of RAM |
 
-The rule that follows: never reach for `--formulas` on a large sheet without a
-`--range` bound. A whole-sheet openpyxl load of a 128k-row formula sheet costs
-tens of seconds and gigabytes; the same window under `--range A1:L50` is instant.
+The rule that follows: for `rows`, never reach for `--formulas` on a large sheet
+without a `--range` bound. A whole-sheet openpyxl load of a 128k-row formula sheet
+costs tens of seconds and gigabytes; the same window under `--range A1:L50` is
+instant. `find` has no range bound, so `find --formulas` is inherently a full
+openpyxl scan; bound its cost with `--sheet` to one sheet and `--max-matches` to
+stop early, and prefer default (calamine) `find` unless formula sources are the
+target.
 
 ## Inspection first
 
@@ -97,7 +102,7 @@ its formula cells returns null; read such cells with `--formulas`. An edit throu
    place; the save is atomic through a sibling temporary file):
 
    ```bash
-   uv run --script <dir>/edit.py input.xlsx output.xlsx
+   uv run --quiet --script <dir>/edit.py input.xlsx output.xlsx
    ```
 
 4. Verify the result with `probe.py`, not with the script's own summary: read back

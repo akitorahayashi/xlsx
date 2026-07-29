@@ -53,3 +53,18 @@ def test_empty_header_cell(run_script, probe_cli, header_workbook):
 def test_duplicate_header_name(run_script, probe_cli, header_workbook):
     result = run_script(probe_cli, "rows", header_workbook, "DupHdr", "--header-row", "1")
     _assert_exit_two(result)
+
+
+def test_missing_positional_argument_is_json(run_script, probe_cli):
+    result = run_script(probe_cli, "rows")  # sheet argument missing
+    _assert_exit_two(result)
+
+
+def test_malformed_integer_argument_is_json(run_script, probe_cli, workbook):
+    result = run_script(probe_cli, "rows", workbook, "Ledger", "--max-rows", "notanint")
+    _assert_exit_two(result)
+
+
+def test_invalid_choice_argument_is_json(run_script, probe_cli, workbook):
+    result = run_script(probe_cli, "rows", workbook, "Ledger", "--format", "yaml")
+    _assert_exit_two(result)

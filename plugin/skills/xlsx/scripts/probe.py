@@ -33,7 +33,7 @@ import sys
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterator, NoReturn, Optional
 
 import python_calamine as calamine
 
@@ -170,24 +170,42 @@ def count_parts(path: Path) -> dict[str, int]:
         "pivotTables": count(lambda n: bool(re.fullmatch(r"xl/pivotTables/pivotTable\d+\.xml", n))),
         "charts": count(lambda n: bool(re.fullmatch(r"xl/charts/chart\d+\.xml", n))),
         "images": count(lambda n: n.startswith("xl/media/") and not n.endswith("/")),
-        "comments": count(lambda n: bool(re.fullmatch(r"xl/comments\d*\.xml", n))),
+        # legacy comments appear as xl/comments1.xml (Excel) or xl/comments/comment1.xml (openpyxl)
+        "comments": count(
+            lambda n: bool(re.fullmatch(r"xl/comments\d*\.xml", n) or re.fullmatch(r"xl/comments/comment\d+\.xml", n))
+        ),
         "threadedComments": count(lambda n: bool(re.fullmatch(r"xl/threadedComments/threadedComment\d+\.xml", n))),
     }
+
+
+# A cell formula is the element <f> or <f ...>. The trailing byte disambiguates it
+# from <formula1>/<formula2> (data validation, conditional formatting), which also
+# begin with "<f" but are not cell formulas.
+_FORMULA_TERMINATORS = frozenset(b" \t\r\n>/")
 
 
 def _scan_for_formula(archive: zipfile.ZipFile, part: str, names: set[str]) -> bool:
     if part not in names:
         return False
-    marker = b"<f"
     with archive.open(part) as stream:
         tail = b""
         while True:
             chunk = stream.read(1 << 20)
             if not chunk:
                 return False
-            if marker in tail + chunk:
-                return True
-            tail = chunk[-1:]  # carry len(marker) - 1 bytes across the boundary
+            buffer = tail + chunk
+            start = 0
+            while True:
+                index = buffer.find(b"<f", start)
+                if index == -1:
+                    break
+                after = index + 2
+                if after >= len(buffer):
+                    break  # marker at the buffer edge; re-check once the next chunk arrives
+                if buffer[after] in _FORMULA_TERMINATORS:
+                    return True
+                start = after
+            tail = buffer[-2:]  # carry the marker length across the boundary
 
 
 def sheet_formula_presence(path: Path) -> dict[str, bool]:
@@ -195,7 +213,7 @@ def sheet_formula_presence(path: Path) -> dict[str, bool]:
 
     The sheet name to part path is resolved through xl/workbook.xml and
     xl/_rels/workbook.xml.rels, then the part is scanned in chunks for the first
-    ``<f`` marker.
+    cell formula element.
     """
     import xml.etree.ElementTree as ET
 
@@ -261,8 +279,9 @@ def cmd_overview(args: argparse.Namespace) -> int:
             )
             continue
 
-        last_row = sheet.total_height  # zero-based index of the last used row
-        last_col = sheet.total_width  # zero-based index of the last used column
+        start_row, start_col = start  # zero-based first used cell
+        end_row = sheet.total_height  # zero-based last used row (== sheet.end[0])
+        end_col = sheet.total_width  # zero-based last used column (== sheet.end[1])
         merged = [
             f"{column_letter(c0)}{r0 + 1}:{column_letter(c1)}{r1 + 1}"
             for (r0, c0), (r1, c1) in (sheet.merged_cell_ranges or [])
@@ -272,9 +291,9 @@ def cmd_overview(args: argparse.Namespace) -> int:
                 "name": name,
                 "visible": visible,
                 "empty": False,
-                "rows": last_row + 1,
-                "columns": last_col + 1,
-                "usedRange": f"A1:{column_letter(last_col)}{last_row + 1}",
+                "rows": end_row - start_row + 1,
+                "columns": end_col - start_col + 1,
+                "usedRange": f"{column_letter(start_col)}{start_row + 1}:{column_letter(end_col)}{end_row + 1}",
                 "mergedRanges": merged,
                 "hasFormulas": formulas.get(name, False),
             }
@@ -318,42 +337,98 @@ def build_fields(header_cells: list[Any]) -> list[str]:
     return fields
 
 
-def _calamine_records(
-    path: Path, sheet_name: str, rng: Optional[CellRange], header_row: Optional[int]
-) -> tuple[list[tuple[int, list[Any]]], Optional[list[Any]], int]:
-    """Return (data records, header cells, last sheet row) for the calamine path.
+def _calamine_row_iter(sheet: Any, c0: int, c1: int) -> Iterator[tuple[int, list[Any]]]:
+    """Yield (one-based row, values sliced to columns [c0, c1]) lazily.
 
-    Records are (one-based absolute row, values) over the requested column span.
-    The grid is anchored at A1 (skip_empty_area=False) so row and column indices
-    are absolute and match --range.
+    calamine's iter_rows is anchored at row 1 but offset to the first used column,
+    so each row is re-anchored to column A before slicing.
     """
+    start = sheet.start
+    if start is None:
+        return
+    start_col = start[1]
+    for index, row in enumerate(sheet.iter_rows()):
+        end_col = start_col + len(row)
+        yield index + 1, [row[c - start_col] if start_col <= c < end_col else "" for c in range(c0, c1 + 1)]
+
+
+def _calamine_header_cells(sheet: Any, header_row: int, c0: int, c1: int) -> list[Any]:
+    grid = sheet.to_python(skip_empty_area=False, nrows=header_row)
+    row = grid[header_row - 1] if 0 <= header_row - 1 < len(grid) else []
+    return [row[c] if c < len(row) else "" for c in range(c0, c1 + 1)]
+
+
+def _openpyxl_row_iter(worksheet: Any, min_col: int, max_col: Optional[int]) -> Iterator[tuple[int, list[Any]]]:
+    for index, row in enumerate(worksheet.iter_rows(min_row=1, min_col=min_col, max_col=max_col, values_only=True)):
+        yield index + 1, list(row)
+
+
+def _openpyxl_header_cells(worksheet: Any, header_row: int, min_col: int, max_col: Optional[int]) -> list[Any]:
+    rows = worksheet.iter_rows(
+        min_row=header_row, max_row=header_row, min_col=min_col, max_col=max_col, values_only=True
+    )
+    return list(next(iter(rows), ()))
+
+
+def _consume_rows(
+    row_iter: Iterator[tuple[int, list[Any]]],
+    r_lo: int,
+    r_hi: Optional[int],
+    header_row: Optional[int],
+    keep_empty: bool,
+    max_rows: Optional[int],
+) -> tuple[list[list[Any]], int, bool]:
+    """Apply row bounds, header exclusion, empty-row omission, and --max-rows.
+
+    The iterator is consumed lazily and abandoned after one qualifying row beyond
+    --max-rows, so a bounded request never materializes the whole sheet.
+    """
+    emitted: list[list[Any]] = []
+    omitted = 0
+    truncated = False
+    for abs_row, values in row_iter:
+        if header_row is not None and abs_row == header_row:
+            continue
+        if abs_row < r_lo:
+            continue
+        if r_hi is not None and abs_row > r_hi:
+            break
+        if all(is_empty(value) for value in values):
+            if not keep_empty:
+                omitted += 1
+                continue
+        if max_rows is not None and len(emitted) >= max_rows:
+            truncated = True
+            break
+        emitted.append(values)
+    return emitted, omitted, truncated
+
+
+def _calamine_extract(
+    path: Path,
+    sheet_name: str,
+    rng: Optional[CellRange],
+    header_row: Optional[int],
+    keep_empty: bool,
+    max_rows: Optional[int],
+) -> tuple[Optional[list[Any]], list[list[Any]], int, bool]:
+    """Return (header cells, emitted rows, omitted count, truncated) for calamine."""
     workbook = calamine.CalamineWorkbook.from_path(str(path))
     require_sheet(sheet_name, workbook.sheet_names)
     sheet = workbook.get_sheet_by_name(sheet_name)
 
     if sheet.start is None:
-        return [], None, 0
+        return None, [], 0, False
 
     last_row = sheet.total_height  # zero-based
     last_col = sheet.total_width  # zero-based
 
     if rng is not None:
-        r0, r1 = rng.min_row - 1, rng.max_row - 1
         c0, c1 = rng.min_col - 1, rng.max_col - 1
-        nrows: Optional[int] = rng.max_row if header_row is None else max(rng.max_row, header_row)
+        r_lo, r_hi = rng.min_row, rng.max_row
     else:
-        r0, r1 = 0, last_row
         c0, c1 = 0, last_col
-        nrows = None
-
-    grid = sheet.to_python(skip_empty_area=False, nrows=nrows)
-
-    def cell(row_index: int, col_index: int) -> Any:
-        if 0 <= row_index < len(grid):
-            row = grid[row_index]
-            if 0 <= col_index < len(row):
-                return row[col_index]
-        return ""
+        r_lo, r_hi = 1, None
 
     header_cells: Optional[list[Any]] = None
     if header_row is not None:
@@ -362,22 +437,26 @@ def _calamine_records(
                 f"Header row {header_row} is outside the sheet (1..{last_row + 1}).",
                 "Pass a --header-row within the sheet's used range.",
             )
-        header_cells = [cell(header_row - 1, c) for c in range(c0, c1 + 1)]
+        header_cells = _calamine_header_cells(sheet, header_row, c0, c1)
 
-    records: list[tuple[int, list[Any]]] = []
-    for r in range(r0, r1 + 1):
-        if header_row is not None and r == header_row - 1:
-            continue
-        records.append((r + 1, [cell(r, c) for c in range(c0, c1 + 1)]))
-    return records, header_cells, last_row + 1
+    emitted, omitted, truncated = _consume_rows(
+        _calamine_row_iter(sheet, c0, c1), r_lo, r_hi, header_row, keep_empty, max_rows
+    )
+    return header_cells, emitted, omitted, truncated
 
 
-def _openpyxl_records(
-    path: Path, sheet_name: str, rng: Optional[CellRange], header_row: Optional[int]
-) -> tuple[list[tuple[int, list[Any]]], Optional[list[Any]], int]:
-    """Return (data records, header cells, last sheet row) for the openpyxl path.
+def _openpyxl_extract(
+    path: Path,
+    sheet_name: str,
+    rng: Optional[CellRange],
+    header_row: Optional[int],
+    keep_empty: bool,
+    max_rows: Optional[int],
+) -> tuple[Optional[list[Any]], list[list[Any]], int, bool]:
+    """Return (header cells, emitted rows, omitted count, truncated) for openpyxl.
 
-    read_only=True keeps memory bounded; data_only=False keeps formula sources.
+    read_only=True streams rows so a bounded request stays cheap; data_only=False
+    keeps formula sources.
     """
     from openpyxl import load_workbook
 
@@ -388,12 +467,11 @@ def _openpyxl_records(
 
         sheet_max_row = worksheet.max_row
         if rng is not None:
-            min_row, max_row = rng.min_row, rng.max_row
             min_col, max_col = rng.min_col, rng.max_col
+            r_lo, r_hi = rng.min_row, rng.max_row
         else:
-            min_row, min_col = 1, 1
-            max_row = sheet_max_row
-            max_col = worksheet.max_column
+            min_col, max_col = 1, worksheet.max_column
+            r_lo, r_hi = 1, None
 
         header_cells: Optional[list[Any]] = None
         if header_row is not None:
@@ -402,31 +480,12 @@ def _openpyxl_records(
                     f"Header row {header_row} is outside the sheet.",
                     "Pass a --header-row within the sheet's used range.",
                 )
-            header_iter = worksheet.iter_rows(
-                min_row=header_row,
-                max_row=header_row,
-                min_col=min_col,
-                max_col=max_col,
-                values_only=True,
-            )
-            header_cells = list(next(iter(header_iter), ()))
+            header_cells = _openpyxl_header_cells(worksheet, header_row, min_col, max_col)
 
-        records: list[tuple[int, list[Any]]] = []
-        for offset, row in enumerate(
-            worksheet.iter_rows(
-                min_row=min_row,
-                max_row=max_row,
-                min_col=min_col,
-                max_col=max_col,
-                values_only=True,
-            )
-        ):
-            absolute_row = min_row + offset
-            if header_row is not None and absolute_row == header_row:
-                continue
-            records.append((absolute_row, list(row)))
-        last_row = sheet_max_row if sheet_max_row is not None else (records[-1][0] if records else 0)
-        return records, header_cells, last_row
+        emitted, omitted, truncated = _consume_rows(
+            _openpyxl_row_iter(worksheet, min_col, max_col), r_lo, r_hi, header_row, keep_empty, max_rows
+        )
+        return header_cells, emitted, omitted, truncated
     finally:
         workbook.close()
 
@@ -437,25 +496,12 @@ def cmd_rows(args: argparse.Namespace) -> int:
     header_row: Optional[int] = args.header_row
     backend = "openpyxl" if args.formulas else "calamine"
 
-    if args.formulas:
-        records, header_cells, _ = _openpyxl_records(path, args.sheet, rng, header_row)
-    else:
-        records, header_cells, _ = _calamine_records(path, args.sheet, rng, header_row)
+    extract = _openpyxl_extract if args.formulas else _calamine_extract
+    header_cells, emitted, omitted, truncated = extract(
+        path, args.sheet, rng, header_row, args.keep_empty_rows, args.max_rows
+    )
 
     fields = build_fields(header_cells) if header_cells is not None else None
-
-    emitted: list[list[Any]] = []
-    omitted = 0
-    truncated = False
-    for _, values in records:
-        if all(is_empty(value) for value in values):
-            if not args.keep_empty_rows:
-                omitted += 1
-                continue
-        if args.max_rows is not None and len(emitted) >= args.max_rows:
-            truncated = True
-            break
-        emitted.append(values)
 
     if fields is not None:
         rows_out: list[Any] = [
@@ -606,8 +652,29 @@ def cmd_find(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------- #
 
 
+class JSONArgumentParser(argparse.ArgumentParser):
+    """ArgumentParser that reports usage errors as the documented JSON on stderr.
+
+    Subparsers inherit this class, so a missing positional, a malformed integer, or
+    an invalid choice exits 2 with {"error", "action"} rather than plain usage text.
+    """
+
+    def error(self, message: str) -> NoReturn:
+        print(
+            json.dumps(
+                {
+                    "error": f"Argument error: {message}",
+                    "action": "Fix the command's arguments; run the subcommand with --help for usage.",
+                },
+                ensure_ascii=False,
+            ),
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Inspect, extract from, and search one .xlsx or .xlsm workbook.")
+    parser = JSONArgumentParser(description="Inspect, extract from, and search one .xlsx or .xlsm workbook.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     overview = subparsers.add_parser("overview", help="Structure, part inventory, and formula presence per sheet.")
