@@ -316,6 +316,21 @@ def require_sheet(name: str, available: list[str]) -> None:
         )
 
 
+def require_header_row(header_row: int, last_row: Optional[int]) -> None:
+    """Bound-check --header-row identically on both backends.
+
+    ``last_row`` is the one-based last used row, or None when the backend cannot
+    report it; the bounds are named in the message only when they are known.
+    """
+    if header_row >= 1 and (last_row is None or header_row <= last_row):
+        return
+    bounds = f" (1..{last_row})" if last_row is not None else ""
+    raise CLIError(
+        f"Header row {header_row} is outside the sheet{bounds}.",
+        "Pass a --header-row within the sheet's used range.",
+    )
+
+
 def build_fields(header_cells: list[Any]) -> list[str]:
     fields: list[str] = []
     seen: set[str] = set()
@@ -337,7 +352,7 @@ def build_fields(header_cells: list[Any]) -> list[str]:
     return fields
 
 
-def _calamine_row_iter(sheet: Any, c0: int, c1: int) -> Iterator[tuple[int, list[Any]]]:
+def _calamine_row_iter(sheet: calamine.CalamineSheet, c0: int, c1: int) -> Iterator[tuple[int, list[Any]]]:
     """Yield (one-based row, values sliced to columns [c0, c1]) lazily.
 
     calamine's iter_rows is anchored at row 1 but offset to the first used column,
@@ -352,7 +367,7 @@ def _calamine_row_iter(sheet: Any, c0: int, c1: int) -> Iterator[tuple[int, list
         yield index + 1, [row[c - start_col] if start_col <= c < end_col else "" for c in range(c0, c1 + 1)]
 
 
-def _calamine_header_cells(sheet: Any, header_row: int, c0: int, c1: int) -> list[Any]:
+def _calamine_header_cells(sheet: calamine.CalamineSheet, header_row: int, c0: int, c1: int) -> list[Any]:
     grid = sheet.to_python(skip_empty_area=False, nrows=header_row)
     row = grid[header_row - 1] if 0 <= header_row - 1 < len(grid) else []
     return [row[c] if c < len(row) else "" for c in range(c0, c1 + 1)]
@@ -432,11 +447,7 @@ def _calamine_extract(
 
     header_cells: Optional[list[Any]] = None
     if header_row is not None:
-        if header_row < 1 or header_row > last_row + 1:
-            raise CLIError(
-                f"Header row {header_row} is outside the sheet (1..{last_row + 1}).",
-                "Pass a --header-row within the sheet's used range.",
-            )
+        require_header_row(header_row, last_row + 1)
         header_cells = _calamine_header_cells(sheet, header_row, c0, c1)
 
     emitted, omitted, truncated = _consume_rows(
@@ -475,11 +486,7 @@ def _openpyxl_extract(
 
         header_cells: Optional[list[Any]] = None
         if header_row is not None:
-            if header_row < 1 or (sheet_max_row is not None and header_row > sheet_max_row):
-                raise CLIError(
-                    f"Header row {header_row} is outside the sheet.",
-                    "Pass a --header-row within the sheet's used range.",
-                )
+            require_header_row(header_row, sheet_max_row)
             header_cells = _openpyxl_header_cells(worksheet, header_row, min_col, max_col)
 
         emitted, omitted, truncated = _consume_rows(
@@ -564,9 +571,11 @@ def build_matcher(args: argparse.Namespace) -> Callable[[str], bool]:
 
 
 def _find_calamine(
-    path: Path, sheet_names: list[str], test: Callable[[str], bool], max_matches: Optional[int]
+    workbook: calamine.CalamineWorkbook,
+    sheet_names: list[str],
+    test: Callable[[str], bool],
+    max_matches: Optional[int],
 ) -> tuple[list[dict[str, Any]], bool]:
-    workbook = calamine.CalamineWorkbook.from_path(str(path))
     matches: list[dict[str, Any]] = []
     for name in sheet_names:
         sheet = workbook.get_sheet_by_name(name)
@@ -585,31 +594,38 @@ def _find_calamine(
 
 
 def _find_openpyxl(
-    path: Path, sheet_names: list[str], test: Callable[[str], bool], max_matches: Optional[int]
+    workbook: Any, sheet_names: list[str], test: Callable[[str], bool], max_matches: Optional[int]
 ) -> tuple[list[dict[str, Any]], bool]:
-    from openpyxl import load_workbook
+    matches: list[dict[str, Any]] = []
+    for name in sheet_names:
+        worksheet = workbook[name]
+        for row in worksheet.iter_rows():
+            for cell in row:
+                if cell.value is None:
+                    continue
+                text = match_text(cell.value)
+                if text is None or not test(text):
+                    continue
+                matches.append({"sheet": name, "cell": cell.coordinate, "value": to_json_value(cell.value)})
+                if max_matches is not None and len(matches) >= max_matches:
+                    return matches, True
+    return matches, False
 
-    workbook = load_workbook(str(path), read_only=True, data_only=False)
-    try:
-        matches: list[dict[str, Any]] = []
-        for name in sheet_names:
-            worksheet = workbook[name]
-            for row in worksheet.iter_rows():
-                for cell in row:
-                    if cell.value is None:
-                        continue
-                    text = match_text(cell.value)
-                    if text is None or not test(text):
-                        continue
-                    matches.append({"sheet": name, "cell": cell.coordinate, "value": to_json_value(cell.value)})
-                    if max_matches is not None and len(matches) >= max_matches:
-                        return matches, True
-        return matches, False
-    finally:
-        workbook.close()
+
+def select_sheets(requested: Optional[str], available: list[str]) -> list[str]:
+    if requested is None:
+        return available
+    require_sheet(requested, available)
+    return [requested]
 
 
 def cmd_find(args: argparse.Namespace) -> int:
+    """Search one workbook, opening the chosen backend's workbook exactly once.
+
+    Sheet-name validation reads the names off the same open workbook the search
+    then walks. A separate probe load cost a second full openpyxl parse of the
+    file under --formulas, roughly doubling the wall time of every such call.
+    """
     path = resolve_workbook(args.file)
     test = build_matcher(args)
     backend = "openpyxl" if args.formulas else "calamine"
@@ -617,22 +633,16 @@ def cmd_find(args: argparse.Namespace) -> int:
     if args.formulas:
         from openpyxl import load_workbook
 
-        probe_wb = load_workbook(str(path), read_only=True, data_only=False)
-        available = list(probe_wb.sheetnames)
-        probe_wb.close()
+        workbook = load_workbook(str(path), read_only=True, data_only=False)
+        try:
+            sheet_names = select_sheets(args.sheet, list(workbook.sheetnames))
+            matches, truncated = _find_openpyxl(workbook, sheet_names, test, args.max_matches)
+        finally:
+            workbook.close()
     else:
-        available = calamine.CalamineWorkbook.from_path(str(path)).sheet_names
-
-    if args.sheet is not None:
-        require_sheet(args.sheet, available)
-        sheet_names = [args.sheet]
-    else:
-        sheet_names = available
-
-    if args.formulas:
-        matches, truncated = _find_openpyxl(path, sheet_names, test, args.max_matches)
-    else:
-        matches, truncated = _find_calamine(path, sheet_names, test, args.max_matches)
+        calamine_workbook = calamine.CalamineWorkbook.from_path(str(path))
+        sheet_names = select_sheets(args.sheet, calamine_workbook.sheet_names)
+        matches, truncated = _find_calamine(calamine_workbook, sheet_names, test, args.max_matches)
 
     emit(
         {
