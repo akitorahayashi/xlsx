@@ -74,6 +74,8 @@ probe.py rows <file> <sheet> [--range A1:F200] [--header-row N] [--max-rows N]
   range inflates from stray formatting; `--keep-empty-rows` retains them so
   positions stay aligned. `--max-rows` caps rows and sets `truncated`. For `csv`
   and `tsv`, omission and truncation are reported as notes on stderr.
+- `--max-rows` and `--max-matches` take a positive integer. Zero and negative
+  values are usage errors, not an empty result.
 - The `backend` field names what produced the values, because the two backends
   differ in typing. calamine reports every number as a float (`3.0`, not `3`) and
   an empty cell as null; openpyxl keeps integer typing. Under both, an empty cell

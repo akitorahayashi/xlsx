@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 
 def _assert_exit_two(result):
     assert result.returncode == 2
@@ -76,6 +78,18 @@ def test_missing_positional_argument_is_json(run_script, probe_cli):
 
 def test_malformed_integer_argument_is_json(run_script, probe_cli, workbook):
     result = run_script(probe_cli, "rows", workbook, "Ledger", "--max-rows", "notanint")
+    _assert_exit_two(result)
+
+
+@pytest.mark.parametrize("cap", ["0", "-1"])
+def test_non_positive_max_rows_is_a_usage_error(run_script, probe_cli, workbook, cap):
+    result = run_script(probe_cli, "rows", workbook, "Ledger", "--max-rows", cap)
+    _assert_exit_two(result)
+
+
+@pytest.mark.parametrize("cap", ["0", "-1"])
+def test_non_positive_max_matches_is_a_usage_error(run_script, probe_cli, workbook, cap):
+    result = run_script(probe_cli, "find", workbook, "e", "--max-matches", cap)
     _assert_exit_two(result)
 
 

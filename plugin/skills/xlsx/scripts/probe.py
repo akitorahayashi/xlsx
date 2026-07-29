@@ -673,6 +673,18 @@ class JSONArgumentParser(argparse.ArgumentParser):
         raise SystemExit(2)
 
 
+def positive_int(raw: str) -> int:
+    """An argparse type for the cap flags, which have no meaning below 1.
+
+    Without it the two caps disagreed at the boundary: --max-rows 0 emitted no
+    rows with truncated set, while --max-matches 0 emitted one match.
+    """
+    value = int(raw)
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = JSONArgumentParser(description="Inspect, extract from, and search one .xlsx or .xlsm workbook.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -686,7 +698,7 @@ def build_parser() -> argparse.ArgumentParser:
     rows.add_argument("sheet")
     rows.add_argument("--range", help="A1 range bound, e.g. A1:F200.")
     rows.add_argument("--header-row", type=int, help="One-based row supplying field names.")
-    rows.add_argument("--max-rows", type=int, help="Cap emitted rows and set truncated.")
+    rows.add_argument("--max-rows", type=positive_int, help="Cap emitted rows and set truncated.")
     rows.add_argument("--keep-empty-rows", action="store_true", help="Retain fully empty rows.")
     rows.add_argument("--formulas", action="store_true", help="Use openpyxl and emit formula sources.")
     rows.add_argument("--format", choices=("json", "csv", "tsv"), default="json")
@@ -699,7 +711,7 @@ def build_parser() -> argparse.ArgumentParser:
     find.add_argument("--regex", action="store_true", help="Treat the pattern as a regular expression.")
     find.add_argument("--case-sensitive", action="store_true", help="Match case exactly.")
     find.add_argument("--formulas", action="store_true", help="Use openpyxl and search formula sources.")
-    find.add_argument("--max-matches", type=int, help="Cap matches and set truncated.")
+    find.add_argument("--max-matches", type=positive_int, help="Cap matches and set truncated.")
     find.set_defaults(func=cmd_find)
 
     return parser
