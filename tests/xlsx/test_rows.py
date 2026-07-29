@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 
 def test_rows_without_header_are_arrays(run_script, probe_cli, workbook):
     result = run_script(probe_cli, "rows", workbook, "Ledger", "--range", "A1:C3")
@@ -84,6 +86,14 @@ def test_rows_tsv_shape(run_script, probe_cli, workbook):
     assert lines[0] == "Date\tItem\tQty"
 
 
+@pytest.mark.parametrize(("fmt", "delimiter"), [("csv", ","), ("tsv", "\t")])
+def test_rows_empty_result_writes_header_only(run_script, probe_cli, workbook, fmt, delimiter):
+    # rows 5 and 6 are empty, so the header is the whole output
+    result = run_script(probe_cli, "rows", workbook, "Ledger", "--header-row", "1", "--range", "A5:C6", "--format", fmt)
+    assert result.returncode == 1
+    assert result.stdout.splitlines() == [delimiter.join(["Date", "Item", "Qty"])]
+
+
 def test_rows_formulas_use_openpyxl_and_report_sources(run_script, probe_cli, workbook):
     result = run_script(probe_cli, "rows", workbook, "Ledger", "--formulas", "--range", "A1:C4")
     assert result.returncode == 0, result.stderr
@@ -92,6 +102,17 @@ def test_rows_formulas_use_openpyxl_and_report_sources(run_script, probe_cli, wo
     # openpyxl keeps integer typing, unlike calamine
     assert doc["rows"][1][2] == 3
     assert doc["rows"][3][2] == "=SUM(C2:C3)"
+
+
+def test_rows_formulas_with_header_row_names_fields(run_script, probe_cli, workbook):
+    result = run_script(probe_cli, "rows", workbook, "Ledger", "--formulas", "--header-row", "1", "--range", "A1:C4")
+    assert result.returncode == 0, result.stderr
+    doc = json.loads(result.stdout)
+    assert doc["backend"] == "openpyxl"
+    assert doc["fields"] == ["Date", "Item", "Qty"]
+    assert doc["headerRow"] == 1
+    assert doc["rows"][0]["Qty"] == 3  # openpyxl keeps integer typing
+    assert doc["rows"][-1]["Qty"] == "=SUM(C2:C3)"
 
 
 def test_rows_no_data_exits_one(run_script, probe_cli, workbook):

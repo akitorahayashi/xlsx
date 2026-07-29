@@ -24,8 +24,22 @@ def test_unsupported_extension(run_script, probe_cli, tmp_path):
     _assert_exit_two(result)
 
 
+def test_workbook_that_is_not_a_zip(run_script, probe_cli, tmp_path):
+    bogus = tmp_path / "bogus.xlsx"
+    bogus.write_text("not a zip archive")
+    result = run_script(probe_cli, "overview", bogus)
+    _assert_exit_two(result)
+
+
 def test_unknown_sheet_lists_available_names(run_script, probe_cli, workbook):
     result = run_script(probe_cli, "rows", workbook, "Nope")
+    payload = _assert_exit_two(result)
+    assert "Ledger" in payload["action"]
+
+
+def test_unknown_sheet_under_formulas_lists_available_names(run_script, probe_cli, workbook):
+    # the openpyxl sheet-validation path, separate from the calamine one above
+    result = run_script(probe_cli, "find", workbook, "SUM", "--formulas", "--sheet", "Nope")
     payload = _assert_exit_two(result)
     assert "Ledger" in payload["action"]
 
