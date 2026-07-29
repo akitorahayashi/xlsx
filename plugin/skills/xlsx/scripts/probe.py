@@ -259,48 +259,48 @@ def cmd_overview(args: argparse.Namespace) -> int:
     sheets: list[dict[str, Any]] = []
     for meta in workbook.sheets_metadata:
         name = meta.name
-        visible = meta.visible == calamine.SheetVisibleEnum.Visible
+        entry: dict[str, Any] = {
+            "name": name,
+            "visible": meta.visible == calamine.SheetVisibleEnum.Visible,
+            "empty": True,
+            "rows": 0,
+            "columns": 0,
+            "usedRange": None,
+            "mergedRanges": [],
+            "hasFormulas": formulas.get(name, False),
+        }
+
         try:
             sheet = workbook.get_sheet_by_name(name)
             start = sheet.start
-        except Exception:
-            start = None
-            sheet = None
+        except calamine.CalamineError as error:
+            # A sheet the backend cannot read is not an empty sheet. Emptiness is
+            # unknown here, so it is reported as null rather than claimed, and the
+            # note carries the reason. Non-calamine failures are not swallowed:
+            # they reach main() and become the exit-2 JSON.
+            entry["empty"] = None
+            entry["note"] = f"unreadable: {error}"
+            sheets.append(entry)
+            continue
 
-        if sheet is None or start is None:
-            sheets.append(
-                {
-                    "name": name,
-                    "visible": visible,
-                    "empty": True,
-                    "rows": 0,
-                    "columns": 0,
-                    "usedRange": None,
-                    "mergedRanges": [],
-                    "hasFormulas": formulas.get(name, False),
-                }
-            )
+        if start is None:  # readable and genuinely empty, e.g. a pivot output sheet
+            sheets.append(entry)
             continue
 
         start_row, start_col = start  # zero-based first used cell
         end_row = sheet.total_height  # zero-based last used row (== sheet.end[0])
         end_col = sheet.total_width  # zero-based last used column (== sheet.end[1])
-        merged = [
-            f"{column_letter(c0)}{r0 + 1}:{column_letter(c1)}{r1 + 1}"
-            for (r0, c0), (r1, c1) in (sheet.merged_cell_ranges or [])
-        ]
-        sheets.append(
-            {
-                "name": name,
-                "visible": visible,
-                "empty": False,
-                "rows": end_row - start_row + 1,
-                "columns": end_col - start_col + 1,
-                "usedRange": f"{column_letter(start_col)}{start_row + 1}:{column_letter(end_col)}{end_row + 1}",
-                "mergedRanges": merged,
-                "hasFormulas": formulas.get(name, False),
-            }
+        entry.update(
+            empty=False,
+            rows=end_row - start_row + 1,
+            columns=end_col - start_col + 1,
+            usedRange=f"{column_letter(start_col)}{start_row + 1}:{column_letter(end_col)}{end_row + 1}",
+            mergedRanges=[
+                f"{column_letter(c0)}{r0 + 1}:{column_letter(c1)}{r1 + 1}"
+                for (r0, c0), (r1, c1) in (sheet.merged_cell_ranges or [])
+            ],
         )
+        sheets.append(entry)
 
     emit({"file": str(path), "parts": parts, "sheets": sheets})
     return 0

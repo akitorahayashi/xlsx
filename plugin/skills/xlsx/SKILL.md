@@ -145,6 +145,14 @@ Pivot table output sheets carry no cell data; both backends read them as empty,
 and the computed pivot results are not readable through either backend. `overview`
 reports such sheets as `empty: true`.
 
+## Unreadable sheets
+
+A sheet the value backend cannot open is not reported as empty. `overview` gives
+it `empty: null` plus a `note` field reading `unreadable: <message>`, and leaves
+its dimensions at zero because nothing was read. A readable but empty sheet keeps
+`empty: true` and carries no note, so the two cases are distinguishable. Any
+other failure is a usage or runtime error with exit 2, not a degraded entry.
+
 ## Temporary artifacts
 
 Copies, intermediate workbooks, and filled templates live under a `mktemp -d`
