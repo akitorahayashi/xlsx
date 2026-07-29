@@ -74,10 +74,11 @@ not fix internal composition.
 
 ## CLI contract
 
-Each skill script prints one JSON document on stdout and uses meaningful exit
-codes: 0 for a produced result, 1 for a valid request with an empty result
-(`find` with no match, `rows` with no data rows), and 2 for a usage or runtime
-error. On exit 2, the script prints JSON to stderr carrying an `action`
+Each skill script prints one compact JSON document on stdout, except
+`rows --format csv|tsv`, which prints delimited text with its notes on stderr.
+Exit codes are meaningful: 0 for a produced result, 1 for a valid request with an
+empty result (`find` with no match, `rows` with no data rows), and 2 for a usage
+or runtime error. On exit 2, the script prints JSON to stderr carrying an `action`
 describing what the user should fix.
 
 ## Distribution boundary

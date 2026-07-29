@@ -27,10 +27,12 @@ script's stderr, so the stderr JSON contract holds even on the first invocation:
 uv run --quiet --script <skill-dir>/scripts/probe.py overview workbook.xlsx
 ```
 
-Every subcommand prints one JSON document on stdout, compact and on a single
-line. Exit codes: 0 a result was produced; 1 the request was valid but empty
-(`find` with no match, `rows` with no data rows); 2 a usage or runtime error, with
-one JSON document carrying `error` and an actionable `action` on stderr.
+Every subcommand prints its result on stdout as one compact single-line JSON
+document. The one exception is `rows --format csv|tsv`, which prints delimited
+text instead and moves its notes to stderr. Exit codes: 0 a result was produced;
+1 the request was valid but empty (`find` with no match, `rows` with no data
+rows); 2 a usage or runtime error, with one JSON document carrying `error` and an
+actionable `action` on stderr.
 
 ## Cost
 
