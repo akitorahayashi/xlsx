@@ -13,13 +13,15 @@ Usage:
 
     uv run --script edit.py <input.xlsx> <output.xlsx>
 
-Both paths are required. An in-place edit passes the same path twice; the atomic
-save through a sibling temporary file makes that safe.
+Both paths are required and must carry the same extension. An in-place edit passes
+the same path twice; the atomic save through a sibling temporary file makes that
+safe. This template edits a workbook, it never converts between formats.
 
 Exit codes:
 - 0: the edit ran and the output was written.
-- 2: a usage or runtime error (edit() not filled in, input missing, bad
-     extension). stderr carries one JSON document with "error" and "action".
+- 2: a usage or runtime error (edit() not filled in, input missing, unsupported or
+     mismatched extension). stderr carries one JSON document with "error" and
+     "action".
 """
 
 from __future__ import annotations
@@ -33,8 +35,8 @@ from typing import Any
 
 from openpyxl import load_workbook
 
-SUPPORTED_SUFFIXES = (".xlsx", ".xlsm", ".xltx", ".xltm")
-VBA_SUFFIXES = (".xlsm", ".xltm")
+SUPPORTED_SUFFIXES = (".xlsx", ".xlsm")
+VBA_SUFFIX = ".xlsm"
 
 
 class EditError(Exception):
@@ -61,22 +63,43 @@ def edit(workbook: Any) -> list[str]:
     raise NotImplementedError
 
 
+def destination_mode(output: Path) -> int:
+    """The permission mode the saved workbook must carry.
+
+    An existing destination keeps its own mode, so an in-place edit does not
+    change who can read the workbook. A new destination gets the mode a plain
+    create would have produced under the current umask.
+    """
+    if output.exists():
+        return output.stat().st_mode & 0o7777
+    mask = os.umask(0)
+    os.umask(mask)
+    return 0o666 & ~mask
+
+
 def save_atomically(workbook: Any, output: Path) -> None:
     """Save to a sibling temporary file, then os.replace onto the destination.
 
     Staging in the destination directory keeps the replace atomic on the same
     filesystem, so an in-place edit (input path == output path) never leaves a
     half-written workbook if the save raises.
+
+    mkstemp creates the staging file 0600 and os.replace carries that mode onto
+    the destination, so the mode is set explicitly before the replace. Ownership,
+    ACLs, and extended attributes still come from the new inode, not the replaced
+    one; mode is the part that is preserved.
     """
     handle, staged = tempfile.mkstemp(dir=str(output.parent), suffix=output.suffix)
     os.close(handle)
     staged_path = Path(staged)
     try:
         workbook.save(staged)
+        os.chmod(staged, destination_mode(output))
         os.replace(staged, output)
-    except BaseException:
+    finally:
+        # the staging file never outlives this call; after a successful replace it
+        # is already gone, and on any failure this is what removes it
         staged_path.unlink(missing_ok=True)
-        raise
 
 
 def run(input_arg: str, output_arg: str) -> int:
@@ -88,7 +111,17 @@ def run(input_arg: str, output_arg: str) -> int:
     if source.suffix.lower() not in SUPPORTED_SUFFIXES:
         raise EditError(
             f"Unsupported extension: {source.suffix or '(none)'}",
-            "This template edits .xlsx and .xlsm (and .xltx/.xltm) workbooks only.",
+            "This template edits .xlsx and .xlsm only. Convert other formats to .xlsx first.",
+        )
+    # keep_vba is decided from the input, so a mismatched output extension writes a
+    # package that contradicts its own name: an .xlsm saved as .xlsx keeps
+    # xl/vbaProject.bin and its content type, and an .xlsx saved as .xlsm has no VBA
+    # project at all. Converting formats is a different operation from editing one.
+    if output.suffix.lower() != source.suffix.lower():
+        raise EditError(
+            f"Output extension {output.suffix or '(none)'} does not match the input's {source.suffix}.",
+            f"Write the output with the same extension as the input ({source.suffix}); "
+            "this template edits a workbook and never converts between formats.",
         )
 
     # data_only=True would replace every formula with its last cached value on
@@ -96,16 +129,18 @@ def run(input_arg: str, output_arg: str) -> int:
     workbook = load_workbook(
         str(source),
         data_only=False,
-        keep_vba=source.suffix.lower() in VBA_SUFFIXES,
+        keep_vba=source.suffix.lower() == VBA_SUFFIX,
     )
     try:
         try:
             changes = edit(workbook)
         except NotImplementedError:
+            # from None: the NotImplementedError is this template's own sentinel
+            # for "not filled in", not a cause worth showing the caller
             raise EditError(
                 "The edit() function is not filled in.",
                 "Open this copy of edit.py and implement edit(workbook) before running it.",
-            )
+            ) from None
         if not isinstance(changes, list) or not all(isinstance(line, str) for line in changes):
             raise EditError(
                 "edit() must return a list of summary strings.",

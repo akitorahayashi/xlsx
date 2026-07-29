@@ -55,7 +55,7 @@ errors carrying a user-actionable `action`, not a degraded result.
 ## Tests
 
 Tests live outside the skills, at the repository root under `tests/`, as pytest
-functions split by concern. They assert each script's process boundary (exit
+functions split by concern. Skill tests assert a script's process boundary (exit
 code, the stdout and stderr JSON, any written files), not internal functions.
 
 - `tests/conftest.py` provides a runner that invokes a skill script through
@@ -63,6 +63,10 @@ code, the stdout and stderr JSON, any written files), not internal functions.
 - `tests/xlsx/` builds its own fixture workbooks with openpyxl into `tmp_path`,
   so no test depends on any external workbook, and covers `overview`, `rows`,
   `find`, the error surface, and the `edit.py` round trip.
+- `tests/test_manifests.py` asserts that the plugin identity duplicated across
+  the manifests stays consistent. It is the one test that is not a process
+  boundary, because each client reads its own manifest and nothing else catches a
+  partial edit.
 
 Enumerate matrix cases with `@pytest.mark.parametrize`, and keep any temporary
 state in `tmp_path`. Tests assert behavior observable at the CLI boundary and do
@@ -70,10 +74,11 @@ not fix internal composition.
 
 ## CLI contract
 
-Each skill script prints one JSON document on stdout and uses meaningful exit
-codes: 0 for a produced result, 1 for a valid request with an empty result
-(`find` with no match, `rows` with no data rows), and 2 for a usage or runtime
-error. On exit 2, the script prints JSON to stderr carrying an `action`
+Each skill script prints one compact JSON document on stdout, except
+`rows --format csv|tsv`, which prints delimited text with its notes on stderr.
+Exit codes are meaningful: 0 for a produced result, 1 for a valid request with an
+empty result (`find` with no match, `rows` with no data rows), and 2 for a usage
+or runtime error. On exit 2, the script prints JSON to stderr carrying an `action`
 describing what the user should fix.
 
 ## Distribution boundary

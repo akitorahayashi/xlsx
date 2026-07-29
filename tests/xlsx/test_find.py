@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 
 def test_find_substring_default(run_script, probe_cli, workbook):
     result = run_script(probe_cli, "find", workbook, "Widget")
@@ -53,6 +55,23 @@ def test_find_formulas_searches_sources(run_script, probe_cli, workbook):
     assert doc["backend"] == "openpyxl"
     assert doc["matchCount"] == 1
     assert doc["matches"][0] == {"sheet": "Ledger", "cell": "C4", "value": "=SUM(C2:C3)"}
+
+
+def test_find_formulas_restricted_to_sheet(run_script, probe_cli, workbook):
+    result = run_script(probe_cli, "find", workbook, "SUM", "--formulas", "--sheet", "Ledger")
+    assert result.returncode == 0, result.stderr
+    doc = json.loads(result.stdout)
+    assert doc["backend"] == "openpyxl"
+    assert doc["matches"] == [{"sheet": "Ledger", "cell": "C4", "value": "=SUM(C2:C3)"}]
+
+
+@pytest.mark.parametrize("extra", [(), ("--formulas",)], ids=["calamine", "openpyxl"])
+def test_find_reports_absolute_coordinates_on_offset_sheet(run_script, probe_cli, feature_workbook, extra):
+    # Offset's only cell is C5, so a backend anchored at the used range would misreport it
+    result = run_script(probe_cli, "find", feature_workbook, "only", *extra)
+    assert result.returncode == 0, result.stderr
+    doc = json.loads(result.stdout)
+    assert doc["matches"] == [{"sheet": "Offset", "cell": "C5", "value": "only"}]
 
 
 def test_find_no_match_exits_one(run_script, probe_cli, workbook):

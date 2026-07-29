@@ -31,9 +31,10 @@ import posixpath
 import re
 import sys
 import zipfile
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterator, NoReturn, Optional
+from typing import Any, NoReturn
 
 import python_calamine as calamine
 
@@ -42,6 +43,9 @@ REL_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 PKG_REL_NS = "{http://schemas.openxmlformats.org/package/2006/relationships}"
 
 SUPPORTED_SUFFIXES = (".xlsx", ".xlsm")
+
+# A row source: sheet name -> (one-based row, values anchored at column A) pairs.
+RowsForSheet = Callable[[str], Iterator[tuple[int, list[Any]]]]
 
 
 class CLIError(Exception):
@@ -140,7 +144,7 @@ def to_json_value(value: Any) -> Any:
     return str(value)
 
 
-def match_text(value: Any) -> Optional[str]:
+def match_text(value: Any) -> str | None:
     """The string a value is matched against, or None when the cell is empty."""
     rendered = to_json_value(value)
     if rendered is None:
@@ -151,7 +155,12 @@ def match_text(value: Any) -> Optional[str]:
 
 
 def emit(document: dict[str, Any]) -> None:
-    print(json.dumps(document, indent=2, ensure_ascii=False))
+    """Print the result as one compact single-line JSON document.
+
+    The consumer is an agent, so indentation is pure token cost on a large rows
+    extraction. edit.py's success line is compact for the same reason.
+    """
+    print(json.dumps(document, separators=(",", ":"), ensure_ascii=False))
 
 
 # --------------------------------------------------------------------------- #
@@ -239,7 +248,9 @@ def sheet_formula_presence(path: Path) -> dict[str, bool]:
             if target is None:
                 presence[name] = False
                 continue
-            if target.startswith("/"):
+            # SIM108 is suppressed here: the suggested ternary runs past the line
+            # limit, and the formatter then wraps it into something harder to read
+            if target.startswith("/"):  # noqa: SIM108
                 part = target.lstrip("/")
             else:
                 part = posixpath.normpath(posixpath.join("xl", target))
@@ -256,48 +267,48 @@ def cmd_overview(args: argparse.Namespace) -> int:
     sheets: list[dict[str, Any]] = []
     for meta in workbook.sheets_metadata:
         name = meta.name
-        visible = meta.visible == calamine.SheetVisibleEnum.Visible
+        entry: dict[str, Any] = {
+            "name": name,
+            "visible": meta.visible == calamine.SheetVisibleEnum.Visible,
+            "empty": True,
+            "rows": 0,
+            "columns": 0,
+            "usedRange": None,
+            "mergedRanges": [],
+            "hasFormulas": formulas.get(name, False),
+        }
+
         try:
             sheet = workbook.get_sheet_by_name(name)
             start = sheet.start
-        except Exception:
-            start = None
-            sheet = None
+        except calamine.CalamineError as error:
+            # A sheet the backend cannot read is not an empty sheet. Emptiness is
+            # unknown here, so it is reported as null rather than claimed, and the
+            # note carries the reason. Non-calamine failures are not swallowed:
+            # they reach main() and become the exit-2 JSON.
+            entry["empty"] = None
+            entry["note"] = f"unreadable: {error}"
+            sheets.append(entry)
+            continue
 
-        if sheet is None or start is None:
-            sheets.append(
-                {
-                    "name": name,
-                    "visible": visible,
-                    "empty": True,
-                    "rows": 0,
-                    "columns": 0,
-                    "usedRange": None,
-                    "mergedRanges": [],
-                    "hasFormulas": formulas.get(name, False),
-                }
-            )
+        if start is None:  # readable and genuinely empty, e.g. a pivot output sheet
+            sheets.append(entry)
             continue
 
         start_row, start_col = start  # zero-based first used cell
         end_row = sheet.total_height  # zero-based last used row (== sheet.end[0])
         end_col = sheet.total_width  # zero-based last used column (== sheet.end[1])
-        merged = [
-            f"{column_letter(c0)}{r0 + 1}:{column_letter(c1)}{r1 + 1}"
-            for (r0, c0), (r1, c1) in (sheet.merged_cell_ranges or [])
-        ]
-        sheets.append(
-            {
-                "name": name,
-                "visible": visible,
-                "empty": False,
-                "rows": end_row - start_row + 1,
-                "columns": end_col - start_col + 1,
-                "usedRange": f"{column_letter(start_col)}{start_row + 1}:{column_letter(end_col)}{end_row + 1}",
-                "mergedRanges": merged,
-                "hasFormulas": formulas.get(name, False),
-            }
+        entry.update(
+            empty=False,
+            rows=end_row - start_row + 1,
+            columns=end_col - start_col + 1,
+            usedRange=f"{column_letter(start_col)}{start_row + 1}:{column_letter(end_col)}{end_row + 1}",
+            mergedRanges=[
+                f"{column_letter(c0)}{r0 + 1}:{column_letter(c1)}{r1 + 1}"
+                for (r0, c0), (r1, c1) in (sheet.merged_cell_ranges or [])
+            ],
         )
+        sheets.append(entry)
 
     emit({"file": str(path), "parts": parts, "sheets": sheets})
     return 0
@@ -314,6 +325,21 @@ def require_sheet(name: str, available: list[str]) -> None:
             f"Sheet not found: {name!r}",
             "Pass one of the available sheet names: " + ", ".join(repr(s) for s in available) + ".",
         )
+
+
+def require_header_row(header_row: int, last_row: int | None) -> None:
+    """Bound-check --header-row identically on both backends.
+
+    ``last_row`` is the one-based last used row, or None when the backend cannot
+    report it; the bounds are named in the message only when they are known.
+    """
+    if header_row >= 1 and (last_row is None or header_row <= last_row):
+        return
+    bounds = f" (1..{last_row})" if last_row is not None else ""
+    raise CLIError(
+        f"Header row {header_row} is outside the sheet{bounds}.",
+        "Pass a --header-row within the sheet's used range.",
+    )
 
 
 def build_fields(header_cells: list[Any]) -> list[str]:
@@ -337,7 +363,7 @@ def build_fields(header_cells: list[Any]) -> list[str]:
     return fields
 
 
-def _calamine_row_iter(sheet: Any, c0: int, c1: int) -> Iterator[tuple[int, list[Any]]]:
+def _calamine_row_iter(sheet: calamine.CalamineSheet, c0: int, c1: int) -> Iterator[tuple[int, list[Any]]]:
     """Yield (one-based row, values sliced to columns [c0, c1]) lazily.
 
     calamine's iter_rows is anchored at row 1 but offset to the first used column,
@@ -352,18 +378,18 @@ def _calamine_row_iter(sheet: Any, c0: int, c1: int) -> Iterator[tuple[int, list
         yield index + 1, [row[c - start_col] if start_col <= c < end_col else "" for c in range(c0, c1 + 1)]
 
 
-def _calamine_header_cells(sheet: Any, header_row: int, c0: int, c1: int) -> list[Any]:
+def _calamine_header_cells(sheet: calamine.CalamineSheet, header_row: int, c0: int, c1: int) -> list[Any]:
     grid = sheet.to_python(skip_empty_area=False, nrows=header_row)
     row = grid[header_row - 1] if 0 <= header_row - 1 < len(grid) else []
     return [row[c] if c < len(row) else "" for c in range(c0, c1 + 1)]
 
 
-def _openpyxl_row_iter(worksheet: Any, min_col: int, max_col: Optional[int]) -> Iterator[tuple[int, list[Any]]]:
+def _openpyxl_row_iter(worksheet: Any, min_col: int, max_col: int | None) -> Iterator[tuple[int, list[Any]]]:
     for index, row in enumerate(worksheet.iter_rows(min_row=1, min_col=min_col, max_col=max_col, values_only=True)):
         yield index + 1, list(row)
 
 
-def _openpyxl_header_cells(worksheet: Any, header_row: int, min_col: int, max_col: Optional[int]) -> list[Any]:
+def _openpyxl_header_cells(worksheet: Any, header_row: int, min_col: int, max_col: int | None) -> list[Any]:
     rows = worksheet.iter_rows(
         min_row=header_row, max_row=header_row, min_col=min_col, max_col=max_col, values_only=True
     )
@@ -373,10 +399,10 @@ def _openpyxl_header_cells(worksheet: Any, header_row: int, min_col: int, max_co
 def _consume_rows(
     row_iter: Iterator[tuple[int, list[Any]]],
     r_lo: int,
-    r_hi: Optional[int],
-    header_row: Optional[int],
+    r_hi: int | None,
+    header_row: int | None,
     keep_empty: bool,
-    max_rows: Optional[int],
+    max_rows: int | None,
 ) -> tuple[list[list[Any]], int, bool]:
     """Apply row bounds, header exclusion, empty-row omission, and --max-rows.
 
@@ -393,10 +419,9 @@ def _consume_rows(
             continue
         if r_hi is not None and abs_row > r_hi:
             break
-        if all(is_empty(value) for value in values):
-            if not keep_empty:
-                omitted += 1
-                continue
+        if not keep_empty and all(is_empty(value) for value in values):
+            omitted += 1
+            continue
         if max_rows is not None and len(emitted) >= max_rows:
             truncated = True
             break
@@ -407,11 +432,11 @@ def _consume_rows(
 def _calamine_extract(
     path: Path,
     sheet_name: str,
-    rng: Optional[CellRange],
-    header_row: Optional[int],
+    rng: CellRange | None,
+    header_row: int | None,
     keep_empty: bool,
-    max_rows: Optional[int],
-) -> tuple[Optional[list[Any]], list[list[Any]], int, bool]:
+    max_rows: int | None,
+) -> tuple[list[Any] | None, list[list[Any]], int, bool]:
     """Return (header cells, emitted rows, omitted count, truncated) for calamine."""
     workbook = calamine.CalamineWorkbook.from_path(str(path))
     require_sheet(sheet_name, workbook.sheet_names)
@@ -430,13 +455,9 @@ def _calamine_extract(
         c0, c1 = 0, last_col
         r_lo, r_hi = 1, None
 
-    header_cells: Optional[list[Any]] = None
+    header_cells: list[Any] | None = None
     if header_row is not None:
-        if header_row < 1 or header_row > last_row + 1:
-            raise CLIError(
-                f"Header row {header_row} is outside the sheet (1..{last_row + 1}).",
-                "Pass a --header-row within the sheet's used range.",
-            )
+        require_header_row(header_row, last_row + 1)
         header_cells = _calamine_header_cells(sheet, header_row, c0, c1)
 
     emitted, omitted, truncated = _consume_rows(
@@ -448,11 +469,11 @@ def _calamine_extract(
 def _openpyxl_extract(
     path: Path,
     sheet_name: str,
-    rng: Optional[CellRange],
-    header_row: Optional[int],
+    rng: CellRange | None,
+    header_row: int | None,
     keep_empty: bool,
-    max_rows: Optional[int],
-) -> tuple[Optional[list[Any]], list[list[Any]], int, bool]:
+    max_rows: int | None,
+) -> tuple[list[Any] | None, list[list[Any]], int, bool]:
     """Return (header cells, emitted rows, omitted count, truncated) for openpyxl.
 
     read_only=True streams rows so a bounded request stays cheap; data_only=False
@@ -473,13 +494,9 @@ def _openpyxl_extract(
             min_col, max_col = 1, worksheet.max_column
             r_lo, r_hi = 1, None
 
-        header_cells: Optional[list[Any]] = None
+        header_cells: list[Any] | None = None
         if header_row is not None:
-            if header_row < 1 or (sheet_max_row is not None and header_row > sheet_max_row):
-                raise CLIError(
-                    f"Header row {header_row} is outside the sheet.",
-                    "Pass a --header-row within the sheet's used range.",
-                )
+            require_header_row(header_row, sheet_max_row)
             header_cells = _openpyxl_header_cells(worksheet, header_row, min_col, max_col)
 
         emitted, omitted, truncated = _consume_rows(
@@ -493,7 +510,7 @@ def _openpyxl_extract(
 def cmd_rows(args: argparse.Namespace) -> int:
     path = resolve_workbook(args.file)
     rng = parse_range(args.range) if args.range else None
-    header_row: Optional[int] = args.header_row
+    header_row: int | None = args.header_row
     backend = "openpyxl" if args.formulas else "calamine"
 
     extract = _openpyxl_extract if args.formulas else _calamine_extract
@@ -504,8 +521,11 @@ def cmd_rows(args: argparse.Namespace) -> int:
     fields = build_fields(header_cells) if header_cells is not None else None
 
     if fields is not None:
+        # strict: a row narrower or wider than the header row would otherwise lose
+        # fields silently. Both come from the same column span, so a mismatch means
+        # the backend reported ragged rows, which is a failure, not a partial row.
         rows_out: list[Any] = [
-            {name: to_json_value(value) for name, value in zip(fields, values)} for values in emitted
+            {name: to_json_value(value) for name, value in zip(fields, values, strict=True)} for values in emitted
         ]
     else:
         rows_out = [[to_json_value(value) for value in values] for values in emitted]
@@ -554,7 +574,7 @@ def build_matcher(args: argparse.Namespace) -> Callable[[str], bool]:
         except re.error as error:
             raise CLIError(
                 f"Invalid regex: {error}", "Fix the regular expression, or drop --regex for substring search."
-            )
+            ) from error
         return lambda text: pattern.search(text) is not None
     if args.case_sensitive:
         needle = args.pattern
@@ -563,53 +583,72 @@ def build_matcher(args: argparse.Namespace) -> Callable[[str], bool]:
     return lambda text: needle in text.lower()
 
 
-def _find_calamine(
-    path: Path, sheet_names: list[str], test: Callable[[str], bool], max_matches: Optional[int]
-) -> tuple[list[dict[str, Any]], bool]:
-    workbook = calamine.CalamineWorkbook.from_path(str(path))
-    matches: list[dict[str, Any]] = []
-    for name in sheet_names:
+def _calamine_find_rows(workbook: calamine.CalamineWorkbook) -> RowsForSheet:
+    def rows_for_sheet(name: str) -> Iterator[tuple[int, list[Any]]]:
         sheet = workbook.get_sheet_by_name(name)
         if sheet.start is None:  # guard: calamine panics on iter of an empty sheet
-            continue
-        grid = sheet.to_python(skip_empty_area=False)
-        for r, row in enumerate(grid):
-            for c, value in enumerate(row):
+            return iter(())
+        # the full used column span, never sliced, so coordinates stay absolute
+        return _calamine_row_iter(sheet, 0, sheet.total_width)
+
+    return rows_for_sheet
+
+
+def _openpyxl_find_rows(workbook: Any) -> RowsForSheet:
+    def rows_for_sheet(name: str) -> Iterator[tuple[int, list[Any]]]:
+        worksheet = workbook[name]
+        # min_row=1 and min_col=1 are load-bearing: a bare iter_rows() on a
+        # read-only worksheet is anchored at the used range, not at A1.
+        return _openpyxl_row_iter(worksheet, 1, worksheet.max_column)
+
+    return rows_for_sheet
+
+
+def find_matches(
+    rows_for_sheet: RowsForSheet,
+    sheet_names: list[str],
+    test: Callable[[str], bool],
+    max_matches: int | None,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Walk each sheet's rows and collect matches until --max-matches is reached.
+
+    The row source must yield (one-based row, values anchored at column A), which
+    is what makes the reported cell coordinates absolute A1 on both backends.
+
+    The cap stops the walk the moment it is reached, without looking for one more
+    match to prove truncation. That is what makes --max-matches a cost bound on a
+    workbook whose full scan is expensive, and it is why this loop is not shared
+    with _consume_rows, which can check its bound before emitting because a row
+    count is cheap to know.
+    """
+    matches: list[dict[str, Any]] = []
+    for name in sheet_names:
+        for abs_row, values in rows_for_sheet(name):
+            for index, value in enumerate(values):
                 text = match_text(value)
                 if text is None or not test(text):
                     continue
-                matches.append({"sheet": name, "cell": f"{column_letter(c)}{r + 1}", "value": to_json_value(value)})
+                cell = f"{column_letter(index)}{abs_row}"
+                matches.append({"sheet": name, "cell": cell, "value": to_json_value(value)})
                 if max_matches is not None and len(matches) >= max_matches:
                     return matches, True
     return matches, False
 
 
-def _find_openpyxl(
-    path: Path, sheet_names: list[str], test: Callable[[str], bool], max_matches: Optional[int]
-) -> tuple[list[dict[str, Any]], bool]:
-    from openpyxl import load_workbook
-
-    workbook = load_workbook(str(path), read_only=True, data_only=False)
-    try:
-        matches: list[dict[str, Any]] = []
-        for name in sheet_names:
-            worksheet = workbook[name]
-            for row in worksheet.iter_rows():
-                for cell in row:
-                    if cell.value is None:
-                        continue
-                    text = match_text(cell.value)
-                    if text is None or not test(text):
-                        continue
-                    matches.append({"sheet": name, "cell": cell.coordinate, "value": to_json_value(cell.value)})
-                    if max_matches is not None and len(matches) >= max_matches:
-                        return matches, True
-        return matches, False
-    finally:
-        workbook.close()
+def select_sheets(requested: str | None, available: list[str]) -> list[str]:
+    if requested is None:
+        return available
+    require_sheet(requested, available)
+    return [requested]
 
 
 def cmd_find(args: argparse.Namespace) -> int:
+    """Search one workbook, opening the chosen backend's workbook exactly once.
+
+    Sheet-name validation reads the names off the same open workbook the search
+    then walks. A separate probe load cost a second full openpyxl parse of the
+    file under --formulas, roughly doubling the wall time of every such call.
+    """
     path = resolve_workbook(args.file)
     test = build_matcher(args)
     backend = "openpyxl" if args.formulas else "calamine"
@@ -617,22 +656,16 @@ def cmd_find(args: argparse.Namespace) -> int:
     if args.formulas:
         from openpyxl import load_workbook
 
-        probe_wb = load_workbook(str(path), read_only=True, data_only=False)
-        available = list(probe_wb.sheetnames)
-        probe_wb.close()
+        workbook = load_workbook(str(path), read_only=True, data_only=False)
+        try:
+            sheet_names = select_sheets(args.sheet, list(workbook.sheetnames))
+            matches, truncated = find_matches(_openpyxl_find_rows(workbook), sheet_names, test, args.max_matches)
+        finally:
+            workbook.close()
     else:
-        available = calamine.CalamineWorkbook.from_path(str(path)).sheet_names
-
-    if args.sheet is not None:
-        require_sheet(args.sheet, available)
-        sheet_names = [args.sheet]
-    else:
-        sheet_names = available
-
-    if args.formulas:
-        matches, truncated = _find_openpyxl(path, sheet_names, test, args.max_matches)
-    else:
-        matches, truncated = _find_calamine(path, sheet_names, test, args.max_matches)
+        calamine_workbook = calamine.CalamineWorkbook.from_path(str(path))
+        sheet_names = select_sheets(args.sheet, calamine_workbook.sheet_names)
+        matches, truncated = find_matches(_calamine_find_rows(calamine_workbook), sheet_names, test, args.max_matches)
 
     emit(
         {
@@ -673,6 +706,18 @@ class JSONArgumentParser(argparse.ArgumentParser):
         raise SystemExit(2)
 
 
+def positive_int(raw: str) -> int:
+    """An argparse type for the cap flags, which have no meaning below 1.
+
+    Without it the two caps disagreed at the boundary: --max-rows 0 emitted no
+    rows with truncated set, while --max-matches 0 emitted one match.
+    """
+    value = int(raw)
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = JSONArgumentParser(description="Inspect, extract from, and search one .xlsx or .xlsm workbook.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -686,7 +731,7 @@ def build_parser() -> argparse.ArgumentParser:
     rows.add_argument("sheet")
     rows.add_argument("--range", help="A1 range bound, e.g. A1:F200.")
     rows.add_argument("--header-row", type=int, help="One-based row supplying field names.")
-    rows.add_argument("--max-rows", type=int, help="Cap emitted rows and set truncated.")
+    rows.add_argument("--max-rows", type=positive_int, help="Cap emitted rows and set truncated.")
     rows.add_argument("--keep-empty-rows", action="store_true", help="Retain fully empty rows.")
     rows.add_argument("--formulas", action="store_true", help="Use openpyxl and emit formula sources.")
     rows.add_argument("--format", choices=("json", "csv", "tsv"), default="json")
@@ -699,13 +744,13 @@ def build_parser() -> argparse.ArgumentParser:
     find.add_argument("--regex", action="store_true", help="Treat the pattern as a regular expression.")
     find.add_argument("--case-sensitive", action="store_true", help="Match case exactly.")
     find.add_argument("--formulas", action="store_true", help="Use openpyxl and search formula sources.")
-    find.add_argument("--max-matches", type=int, help="Cap matches and set truncated.")
+    find.add_argument("--max-matches", type=positive_int, help="Cap matches and set truncated.")
     find.set_defaults(func=cmd_find)
 
     return parser
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return int(args.func(args))

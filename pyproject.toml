@@ -23,6 +23,12 @@ testpaths = ["tests"]
 target-version = "py312"
 line-length = 120
 
+# Beyond ruff's defaults (E4/E7/E9/F): import order, modern typing idioms,
+# bugbear-class patterns, simplifications, and blind-except detection. BLE is
+# selected so the deliberate catch-all handlers keep their explicit noqa.
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B", "SIM", "BLE"]
+
 [tool.mypy]
 python_version = "3.12"
 files = ["plugin/skills", "tests"]

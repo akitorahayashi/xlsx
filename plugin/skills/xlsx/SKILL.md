@@ -27,10 +27,12 @@ script's stderr, so the stderr JSON contract holds even on the first invocation:
 uv run --quiet --script <skill-dir>/scripts/probe.py overview workbook.xlsx
 ```
 
-Every subcommand prints one JSON document on stdout. Exit codes: 0 a result was
-produced; 1 the request was valid but empty (`find` with no match, `rows` with no
-data rows); 2 a usage or runtime error, with one JSON document carrying `error`
-and an actionable `action` on stderr.
+Every subcommand prints its result on stdout as one compact single-line JSON
+document. The one exception is `rows --format csv|tsv`, which prints delimited
+text instead and moves its notes to stderr. Exit codes: 0 a result was produced;
+1 the request was valid but empty (`find` with no match, `rows` with no data
+rows); 2 a usage or runtime error, with one JSON document carrying `error` and an
+actionable `action` on stderr.
 
 ## Cost
 
@@ -74,6 +76,8 @@ probe.py rows <file> <sheet> [--range A1:F200] [--header-row N] [--max-rows N]
   range inflates from stray formatting; `--keep-empty-rows` retains them so
   positions stay aligned. `--max-rows` caps rows and sets `truncated`. For `csv`
   and `tsv`, omission and truncation are reported as notes on stderr.
+- `--max-rows` and `--max-matches` take a positive integer. Zero and negative
+  values are usage errors, not an empty result.
 - The `backend` field names what produced the values, because the two backends
   differ in typing. calamine reports every number as a float (`3.0`, not `3`) and
   an empty cell as null; openpyxl keeps integer typing. Under both, an empty cell
@@ -104,6 +108,10 @@ its formula cells returns null; read such cells with `--formulas`. An edit throu
    ```bash
    uv run --quiet --script <dir>/edit.py input.xlsx output.xlsx
    ```
+
+   Both paths carry the same extension. The template edits a workbook and never
+   converts between formats, so a mismatched output extension is a usage error
+   rather than a package whose contents contradict its name.
 
 4. Verify the result with `probe.py`, not with the script's own summary: read back
    the changed cells and confirm formulas and merged ranges survived.
@@ -142,6 +150,14 @@ values are needed.
 Pivot table output sheets carry no cell data; both backends read them as empty,
 and the computed pivot results are not readable through either backend. `overview`
 reports such sheets as `empty: true`.
+
+## Unreadable sheets
+
+A sheet the value backend cannot open is not reported as empty. `overview` gives
+it `empty: null` plus a `note` field reading `unreadable: <message>`, and leaves
+its dimensions at zero because nothing was read. A readable but empty sheet keeps
+`empty: true` and carries no note, so the two cases are distinguishable. Any
+other failure is a usage or runtime error with exit 2, not a degraded entry.
 
 ## Temporary artifacts
 

@@ -7,6 +7,7 @@ into tmp_path.
 from __future__ import annotations
 
 import datetime as dt
+import zipfile
 from pathlib import Path
 
 import openpyxl
@@ -14,6 +15,10 @@ import pytest
 from openpyxl.chart import BarChart, Reference
 from openpyxl.comments import Comment
 from openpyxl.worksheet.datavalidation import DataValidation
+
+VBA_PART = "xl/vbaProject.bin"
+VBA_STUB = b"stub-vba-project-part" * 4
+VBA_CONTENT_TYPE = f'<Override PartName="/{VBA_PART}" ContentType="application/vnd.ms-office.vbaProject"/>'
 
 
 @pytest.fixture
@@ -94,4 +99,31 @@ def feature_workbook(tmp_path: Path) -> Path:
 
     path = tmp_path / "features.xlsx"
     wb.save(path)
+    return path
+
+
+@pytest.fixture
+def macro_workbook(tmp_path: Path) -> Path:
+    """A .xlsm carrying a stub xl/vbaProject.bin part.
+
+    openpyxl cannot author a VBA project, but keep_vba copies the part opaquely
+    without parsing it, so stub bytes are enough to observe whether the round trip
+    preserves it. The workbook is repacked from an openpyxl-built .xlsx in tmp_path
+    with the part and its content-type Override added, so no binary is committed.
+    """
+    wb = openpyxl.Workbook()
+    sheet = wb.active
+    sheet.title = "Macro"
+    sheet["A1"] = 1
+    plain = tmp_path / "plain.xlsx"
+    wb.save(plain)
+
+    path = tmp_path / "macro.xlsm"
+    with zipfile.ZipFile(plain) as source, zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as target:
+        for item in source.infolist():
+            data = source.read(item.filename)
+            if item.filename == "[Content_Types].xml":
+                data = data.decode().replace("</Types>", f"{VBA_CONTENT_TYPE}</Types>").encode()
+            target.writestr(item, data)
+        target.writestr(VBA_PART, VBA_STUB)
     return path

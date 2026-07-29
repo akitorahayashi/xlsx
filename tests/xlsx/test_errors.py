@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 
 def _assert_exit_two(result):
     assert result.returncode == 2
@@ -24,8 +26,22 @@ def test_unsupported_extension(run_script, probe_cli, tmp_path):
     _assert_exit_two(result)
 
 
+def test_workbook_that_is_not_a_zip(run_script, probe_cli, tmp_path):
+    bogus = tmp_path / "bogus.xlsx"
+    bogus.write_text("not a zip archive")
+    result = run_script(probe_cli, "overview", bogus)
+    _assert_exit_two(result)
+
+
 def test_unknown_sheet_lists_available_names(run_script, probe_cli, workbook):
     result = run_script(probe_cli, "rows", workbook, "Nope")
+    payload = _assert_exit_two(result)
+    assert "Ledger" in payload["action"]
+
+
+def test_unknown_sheet_under_formulas_lists_available_names(run_script, probe_cli, workbook):
+    # the openpyxl sheet-validation path, separate from the calamine one above
+    result = run_script(probe_cli, "find", workbook, "SUM", "--formulas", "--sheet", "Nope")
     payload = _assert_exit_two(result)
     assert "Ledger" in payload["action"]
 
@@ -62,6 +78,18 @@ def test_missing_positional_argument_is_json(run_script, probe_cli):
 
 def test_malformed_integer_argument_is_json(run_script, probe_cli, workbook):
     result = run_script(probe_cli, "rows", workbook, "Ledger", "--max-rows", "notanint")
+    _assert_exit_two(result)
+
+
+@pytest.mark.parametrize("cap", ["0", "-1"])
+def test_non_positive_max_rows_is_a_usage_error(run_script, probe_cli, workbook, cap):
+    result = run_script(probe_cli, "rows", workbook, "Ledger", "--max-rows", cap)
+    _assert_exit_two(result)
+
+
+@pytest.mark.parametrize("cap", ["0", "-1"])
+def test_non_positive_max_matches_is_a_usage_error(run_script, probe_cli, workbook, cap):
+    result = run_script(probe_cli, "find", workbook, "e", "--max-matches", cap)
     _assert_exit_two(result)
 
 
