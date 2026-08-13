@@ -1,6 +1,6 @@
 {
   "name": "xlsx",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Inspects, extracts from, and edits .xlsx and .xlsm workbooks through uv-run single-file Python scripts, creating no virtualenv or project files in the user's repository.",
   "skills": "./skills/",
   "author": {
