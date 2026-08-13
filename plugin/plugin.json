@@ -1,4 +1,0 @@
-{
-  "name": "xlsx",
-  "description": "Inspects, extracts from, and edits .xlsx and .xlsm workbooks through uv-run single-file Python scripts, creating no virtualenv or project files in the user's repository."
-}

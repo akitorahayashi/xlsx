@@ -88,7 +88,7 @@ marketplace manifests at `.claude-plugin/marketplace.json` and
 `.agents/plugins/marketplace.json` point to `./plugin`.
 
 The `plugin/` directory is the plugin root. Component directories such as
-`skills/` live beside the plugin manifests `.claude-plugin/plugin.json`,
-`.codex-plugin/plugin.json`, and `plugin.json`; clients do not load components
-nested inside either client-manifest directory. Development assets at the
-repository root support development and do not enter the installable plugin.
+`skills/` live beside the plugin manifests `.claude-plugin/plugin.json` and
+`.codex-plugin/plugin.json`; clients do not load components nested inside either
+client-manifest directory. Development assets at the repository root support
+development and do not enter the installable plugin.

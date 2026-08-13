@@ -3,7 +3,7 @@
 A GitHub-installable Agent Skills plugin whose single skill inspects, extracts
 from, and edits `.xlsx` and `.xlsm` workbooks. The repository root is the
 marketplace root for Claude Code and Codex, and the `plugin/` directory is the
-plugin root for Claude Code, Antigravity CLI, and Codex.
+plugin root for both.
 
 The skill drives Python CLIs executed through `uv` as PEP 723 single-file
 scripts, so a plugin user needs no virtualenv, no `pip install`, and no project
@@ -25,8 +25,7 @@ xlsx/
 │   │       ├── scripts/probe.py         # read-only CLI: overview / rows / find
 │   │       └── assets/edit.py           # edit template to copy and fill
 │   ├── .claude-plugin/plugin.json       # Claude Code manifest
-│   ├── .codex-plugin/plugin.json        # Codex manifest
-│   └── plugin.json                      # Antigravity CLI manifest
+│   └── .codex-plugin/plugin.json        # Codex manifest
 ├── tests/                               # process-boundary tests
 ├── pyproject.toml                       # development tools only
 ├── Makefile                             # make test / fix / lint
@@ -40,7 +39,7 @@ The marketplace manifests expose the plugin in this repository by pointing to
 `./plugin`. They are installation indexes only; the plugin body is not duplicated
 under a `plugins/` directory.
 
-`plugin/skills/` is shared across all three clients. Each manifest carries only
+`plugin/skills/` is shared across both clients. Each manifest carries only
 that client's identity; the skill body is never duplicated. Component
 directories (`skills/`, and later `hooks/`, `agents/`, `commands/`, `.mcp.json`)
 live at the plugin root. Only `plugin.json` belongs inside `.claude-plugin/` and
@@ -54,9 +53,6 @@ live at the plugin root. Only `plugin.json` belongs inside `.claude-plugin/` and
 - Codex — `.codex-plugin/plugin.json` declares `"skills": "./skills/"` and
   accepts the same optional metadata plus an `interface` block for
   install-surface presentation.
-- Antigravity CLI — `plugin.json` is a closed schema: only `name` (required,
-  `^[a-zA-Z0-9-_]+$`) and `description` are valid. Skills are discovered from
-  `skills/`; do not add other fields.
 
 ## The skill
 
@@ -114,7 +110,6 @@ full workflow and CLI contract.
 ```bash
 claude plugin validate .
 claude plugin validate ./plugin
-agy plugin validate ./plugin
 ```
 
 ## Install
@@ -136,13 +131,4 @@ session with `claude --plugin-dir ./plugin`.
 ```bash
 codex plugin marketplace add akitorahayashi/xlsx
 codex plugin add xlsx@xlsx
-```
-
-### Antigravity CLI
-
-The `plugin/` directory holds both `plugin.json` and `skills/`, so Antigravity
-can install it directly:
-
-```bash
-agy plugin install ./plugin
 ```
